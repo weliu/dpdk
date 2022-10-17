@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_CMD_H_
-#define _HNS3_CMD_H_
+#ifndef HNS3_CMD_H
+#define HNS3_CMD_H
 
 #include <stdint.h>
+
+#include <rte_byteorder.h>
+#include <rte_spinlock.h>
 
 #define HNS3_CMDQ_TX_TIMEOUT		30000
 #define HNS3_CMDQ_CLEAR_WAIT_TIME	200
@@ -56,23 +59,11 @@ enum hns3_cmd_return_status {
 	HNS3_CMD_ROH_CHECK_FAIL = 12
 };
 
-enum hns3_cmd_status {
-	HNS3_STATUS_SUCCESS     = 0,
-	HNS3_ERR_CSQ_FULL       = -1,
-	HNS3_ERR_CSQ_TIMEOUT    = -2,
-	HNS3_ERR_CSQ_ERROR      = -3,
-};
-
-struct hns3_misc_vector {
-	uint8_t *addr;
-	int vector_irq;
-};
-
 struct hns3_cmq {
 	struct hns3_cmq_ring csq;
 	struct hns3_cmq_ring crq;
 	uint16_t tx_timeout;
-	enum hns3_cmd_status last_status;
+	enum hns3_cmd_return_status last_status;
 };
 
 enum hns3_opcode_type {
@@ -115,6 +106,7 @@ enum hns3_opcode_type {
 
 	/* MAC command */
 	HNS3_OPC_CONFIG_MAC_MODE        = 0x0301,
+	HNS3_OPC_CONFIG_AN_MODE         = 0x0304,
 	HNS3_OPC_QUERY_LINK_STATUS      = 0x0307,
 	HNS3_OPC_CONFIG_MAX_FRM_SIZE    = 0x0308,
 	HNS3_OPC_CONFIG_SPEED_DUP       = 0x0309,
@@ -122,6 +114,10 @@ enum hns3_opcode_type {
 	HNS3_OPC_MAC_TNL_INT_EN         = 0x0311,
 	HNS3_OPC_CLEAR_MAC_TNL_INT      = 0x0312,
 	HNS3_OPC_CONFIG_FEC_MODE        = 0x031A,
+
+	/* PTP command */
+	HNS3_OPC_PTP_INT_EN             = 0x0501,
+	HNS3_OPC_CFG_PTP_MODE           = 0x0507,
 
 	/* PFC/Pause commands */
 	HNS3_OPC_CFG_MAC_PAUSE_EN       = 0x0701,
@@ -163,6 +159,9 @@ enum hns3_opcode_type {
 	HNS3_OPC_TM_INTERNAL_STS        = 0x0850,
 	HNS3_OPC_TM_INTERNAL_CNT        = 0x0851,
 	HNS3_OPC_TM_INTERNAL_STS_1      = 0x0852,
+
+	HNS3_OPC_TM_PORT_LIMIT_RATE     = 0x0870,
+	HNS3_OPC_TM_TC_LIMIT_RATE       = 0x0871,
 
 	/* Mailbox cmd */
 	HNS3_OPC_MBX_VF_TO_PF           = 0x2001,
@@ -233,7 +232,7 @@ enum hns3_opcode_type {
 	/* SFP command */
 	HNS3_OPC_GET_SFP_EEPROM         = 0x7100,
 	HNS3_OPC_GET_SFP_EXIST          = 0x7101,
-	HNS3_OPC_SFP_GET_SPEED          = 0x7104,
+	HNS3_OPC_GET_SFP_INFO           = 0x7104,
 
 	/* Interrupts commands */
 	HNS3_OPC_ADD_RING_TO_VECTOR     = 0x1503,
@@ -254,6 +253,8 @@ enum hns3_opcode_type {
 	HNS3_OPC_QUERY_MSIX_INT_STS_BD_NUM      = 0x1513,
 	HNS3_OPC_QUERY_CLEAR_ALL_MPF_MSIX_INT   = 0x1514,
 	HNS3_OPC_QUERY_CLEAR_ALL_PF_MSIX_INT    = 0x1515,
+	HNS3_OPC_QUERY_ALL_ERR_BD_NUM           = 0x1516,
+	HNS3_OPC_QUERY_ALL_ERR_INFO             = 0x1517,
 	HNS3_OPC_IGU_EGU_TNL_INT_EN             = 0x1803,
 	HNS3_OPC_IGU_COMMON_INT_EN              = 0x1806,
 	HNS3_OPC_TM_QCN_MEM_INT_CFG             = 0x1A14,
@@ -306,22 +307,30 @@ struct hns3_rx_priv_buff_cmd {
 #define HNS3_FW_VERSION_BYTE0_M		GENMASK(7, 0)
 
 enum HNS3_CAPS_BITS {
-	HNS3_CAPS_UDP_GSO_B,
-	HNS3_CAPS_ATR_B,
-	HNS3_CAPS_FD_QUEUE_REGION_B,
+	/*
+	 * The following capability index definitions must be the same as those
+	 * of the firmware.
+	 */
+	HNS3_CAPS_FD_QUEUE_REGION_B = 2,
 	HNS3_CAPS_PTP_B,
-	HNS3_CAPS_INT_QL_B,
-	HNS3_CAPS_SIMPLE_BD_B,
-	HNS3_CAPS_TX_PUSH_B,
-	HNS3_CAPS_PHY_IMP_B,
+	HNS3_CAPS_TX_PUSH_B = 6,
+	HNS3_CAPS_PHY_IMP_B = 7,
 	HNS3_CAPS_TQP_TXRX_INDEP_B,
 	HNS3_CAPS_HW_PAD_B,
 	HNS3_CAPS_STASH_B,
 	HNS3_CAPS_UDP_TUNNEL_CSUM_B,
 	HNS3_CAPS_RAS_IMP_B,
-	HNS3_CAPS_FEC_B,
-	HNS3_CAPS_PAUSE_B,
-	HNS3_CAPS_RXD_ADV_LAYOUT_B,
+	HNS3_CAPS_RXD_ADV_LAYOUT_B = 15,
+	HNS3_CAPS_TM_B = 19,
+};
+
+/* Capabilities of VF dependent on the PF */
+enum HNS3VF_CAPS_BITS {
+	/*
+	 * The following capability index definitions must be the same as those
+	 * in kernel side PF.
+	 */
+	HNS3VF_CAPS_VLAN_FLT_MOD_B = 0,
 };
 
 enum HNS3_API_CAP_BITS {
@@ -381,20 +390,6 @@ struct hns3_shared_buf {
 struct hns3_pkt_buf_alloc {
 	struct hns3_priv_buf priv_buf[HNS3_MAX_TC_NUM];
 	struct hns3_shared_buf s_buf;
-};
-
-#define HNS3_RX_COM_WL_EN_B	15
-struct hns3_rx_com_wl_buf_cmd {
-	uint16_t high_wl;
-	uint16_t low_wl;
-	uint8_t rsv[20];
-};
-
-#define HNS3_RX_PKT_EN_B	15
-struct hns3_rx_pkt_buf_cmd {
-	uint16_t high_pkt;
-	uint16_t low_pkt;
-	uint8_t rsv[20];
 };
 
 #define HNS3_PF_STATE_DONE_B	0
@@ -460,8 +455,6 @@ struct hns3_umv_spc_alc_cmd {
 #define HNS3_CFG_RD_LEN_BYTES		16
 #define HNS3_CFG_RD_LEN_UNIT		4
 
-#define HNS3_CFG_VMDQ_S			0
-#define HNS3_CFG_VMDQ_M			GENMASK(7, 0)
 #define HNS3_CFG_TC_NUM_S		8
 #define HNS3_CFG_TC_NUM_M		GENMASK(15, 8)
 #define HNS3_CFG_TQP_DESC_N_S		16
@@ -594,7 +587,6 @@ struct hns3_cfg_gro_status_cmd {
 
 #define HNS3_RSS_HASH_KEY_OFFSET_B	4
 
-#define HNS3_RSS_CFG_TBL_SIZE	16
 #define HNS3_RSS_HASH_KEY_NUM	16
 /* Configure the algorithm mode and Hash Key, opcode:0x0D01 */
 struct hns3_rss_generic_config_cmd {
@@ -682,6 +674,7 @@ struct hns3_firmware_compat_cmd {
 #define HNS3_PHY_LINK_SPEED_10M_BIT		BIT(1)
 #define HNS3_PHY_LINK_SPEED_100M_HD_BIT		BIT(2)
 #define HNS3_PHY_LINK_SPEED_100M_BIT		BIT(3)
+#define HNS3_PHY_LINK_SPEED_1000M_BIT		BIT(5)
 #define HNS3_PHY_LINK_MODE_AUTONEG_BIT		BIT(6)
 #define HNS3_PHY_LINK_MODE_PAUSE_BIT		BIT(13)
 #define HNS3_PHY_LINK_MODE_ASYM_PAUSE_BIT	BIT(14)
@@ -769,13 +762,6 @@ struct hns3_config_auto_neg_cmd {
 	uint8_t   rsv[20];
 };
 
-#define HNS3_MAC_CFG_FEC_AUTO_EN_B	0
-#define HNS3_MAC_CFG_FEC_MODE_S		1
-#define HNS3_MAC_CFG_FEC_MODE_M	GENMASK(3, 1)
-#define HNS3_MAC_FEC_OFF		0
-#define HNS3_MAC_FEC_BASER		1
-#define HNS3_MAC_FEC_RS			2
-
 #define HNS3_SFP_INFO_BD0_LEN  20UL
 #define HNS3_SFP_INFO_BDX_LEN  24UL
 
@@ -790,13 +776,35 @@ struct hns3_sfp_type {
 	uint8_t ext_type;
 };
 
-struct hns3_sfp_speed_cmd {
-	uint32_t  sfp_speed;
-	uint8_t   query_type; /* 0: sfp speed, 1: active fec */
-	uint8_t   active_fec; /* current FEC mode */
-	uint16_t  rsv1;
-	uint32_t  rsv2[4];
+/* Bitmap flags in supported_speed */
+#define HNS3_FIBER_LINK_SPEED_1G_BIT		BIT(0)
+#define HNS3_FIBER_LINK_SPEED_10G_BIT		BIT(1)
+#define HNS3_FIBER_LINK_SPEED_25G_BIT		BIT(2)
+#define HNS3_FIBER_LINK_SPEED_50G_BIT		BIT(3)
+#define HNS3_FIBER_LINK_SPEED_100G_BIT		BIT(4)
+#define HNS3_FIBER_LINK_SPEED_40G_BIT		BIT(5)
+#define HNS3_FIBER_LINK_SPEED_100M_BIT		BIT(6)
+#define HNS3_FIBER_LINK_SPEED_10M_BIT		BIT(7)
+#define HNS3_FIBER_LINK_SPEED_200G_BIT		BIT(8)
+
+struct hns3_sfp_info_cmd {
+	uint32_t sfp_speed;
+	uint8_t query_type; /* 0: sfp speed, 1: active */
+	uint8_t active_fec; /* current FEC mode */
+	uint8_t autoneg; /* current autoneg state */
+	/* 0: not support autoneg, 1: support autoneg */
+	uint8_t autoneg_ability;
+	uint32_t supported_speed; /* speed supported by current media */
+	uint32_t module_type;
+	uint8_t rsv1[8];
 };
+
+#define HNS3_MAC_CFG_FEC_AUTO_EN_B	0
+#define HNS3_MAC_CFG_FEC_MODE_S		1
+#define HNS3_MAC_CFG_FEC_MODE_M	GENMASK(3, 1)
+#define HNS3_MAC_FEC_OFF		0
+#define HNS3_MAC_FEC_BASER		1
+#define HNS3_MAC_FEC_RS			2
 
 /* Configure FEC mode, opcode:0x031A */
 struct hns3_config_fec_cmd {
@@ -898,7 +906,8 @@ enum hns3_mac_vlan_add_resp_code {
 	HNS3_ADD_MC_OVERFLOW,      /* ADD failed for MC overflow */
 };
 
-#define HNS3_MC_MAC_VLAN_ADD_DESC_NUM	3
+#define HNS3_MC_MAC_VLAN_OPS_DESC_NUM   3
+#define HNS3_UC_MAC_VLAN_OPS_DESC_NUM   1
 
 #define HNS3_MAC_VLAN_BIT0_EN_B		0
 #define HNS3_MAC_VLAN_BIT1_EN_B		1
@@ -958,6 +967,12 @@ struct hns3_dev_specs_0_cmd {
 	uint32_t max_tm_rate;
 };
 
+struct hns3_dev_specs_1_cmd {
+	uint8_t rsv0[12];
+	uint8_t min_tx_pkt_len;
+	uint8_t rsv1[11];
+};
+
 struct hns3_query_rpu_cmd {
 	uint32_t tc_queue_num;
 	uint32_t rsv1[2];
@@ -974,6 +989,32 @@ struct hns3_query_ssu_cmd {
 	uint32_t part_drop_cnt;
 	uint32_t oq_drop_cnt;
 	uint32_t rev1[2];
+};
+
+#define HNS3_PTP_ENABLE_B               0
+#define HNS3_PTP_TX_ENABLE_B            1
+#define HNS3_PTP_RX_ENABLE_B            2
+
+#define HNS3_PTP_TYPE_S                 0
+#define HNS3_PTP_TYPE_M                (0x3 << HNS3_PTP_TYPE_S)
+
+#define ALL_PTP_V2_TYPE                 0xF
+#define HNS3_PTP_MESSAGE_TYPE_S         0
+#define HNS3_PTP_MESSAGE_TYPE_M        (0xF << HNS3_PTP_MESSAGE_TYPE_S)
+
+#define PTP_TYPE_L2_V2_TYPE             0
+
+struct hns3_ptp_mode_cfg_cmd {
+	uint8_t enable;
+	uint8_t ptp_type;
+	uint8_t v2_message_type_1;
+	uint8_t v2_message_type_0;
+	uint8_t rsv[20];
+};
+
+struct hns3_ptp_int_cmd {
+	uint8_t int_en;
+	uint8_t rsvd[23];
 };
 
 #define HNS3_MAX_TQP_NUM_HIP08_PF	64
@@ -1003,4 +1044,4 @@ int hns3_cmd_init(struct hns3_hw *hw);
 void hns3_cmd_destroy_queue(struct hns3_hw *hw);
 void hns3_cmd_uninit(struct hns3_hw *hw);
 
-#endif /* _HNS3_CMD_H_ */
+#endif /* HNS3_CMD_H */

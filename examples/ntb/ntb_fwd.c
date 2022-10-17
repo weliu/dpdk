@@ -3,6 +3,7 @@
  */
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <signal.h>
@@ -89,17 +90,16 @@ static uint16_t pkt_burst = NTB_DFLT_PKT_BURST;
 
 static struct rte_eth_conf eth_port_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_RSS,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_RSS,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP,
+			.rss_hf = RTE_ETH_RSS_IP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -696,7 +696,7 @@ assign_stream_to_lcores(void)
 			break;
 	}
 
-	/* Print packet forwading config. */
+	/* Print packet forwarding config. */
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		conf = &fwd_lcore_conf[lcore_id];
 
@@ -1497,6 +1497,9 @@ main(int argc, char **argv)
 	} else {
 		start_pkt_fwd();
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

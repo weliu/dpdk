@@ -11,6 +11,17 @@
 #include <rte_mbuf.h>
 #include <rte_byteorder.h>
 #include <rte_ip.h>
+
+#ifdef RTE_EXEC_ENV_WINDOWS
+static int
+test_flow_classify(void)
+{
+	printf("flow_classify not supported on Windows, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_acl.h>
 #include <rte_common.h>
 #include <rte_table_acl.h>
@@ -95,7 +106,7 @@ static struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
  *  dst mask 255.255.255.00 / udp src is 32 dst is 33 / end"
  */
 static struct rte_flow_item_ipv4 ipv4_udp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_UDP, 0,
+	{ { .version_ihl = 0}, 0, 0, 0, 0, 0, IPPROTO_UDP, 0,
 	  RTE_IPV4(2, 2, 2, 3), RTE_IPV4(2, 2, 2, 7)}
 };
 static const struct rte_flow_item_ipv4 ipv4_mask_24 = {
@@ -131,7 +142,7 @@ static struct rte_flow_item  end_item = { RTE_FLOW_ITEM_TYPE_END,
  *  dst mask 255.255.255.00 / tcp src is 16 dst is 17 / end"
  */
 static struct rte_flow_item_ipv4 ipv4_tcp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_TCP, 0,
+	{ { .version_ihl = 0}, 0, 0, 0, 0, 0, IPPROTO_TCP, 0,
 	  RTE_IPV4(1, 2, 3, 4), RTE_IPV4(5, 6, 7, 8)}
 };
 
@@ -150,8 +161,8 @@ static struct rte_flow_item  tcp_item_1 = { RTE_FLOW_ITEM_TYPE_TCP,
  *  dst mask 255.255.255.00 / sctp src is 16 dst is 17/ end"
  */
 static struct rte_flow_item_ipv4 ipv4_sctp_spec_1 = {
-	{ 0, 0, 0, 0, 0, 0, IPPROTO_SCTP, 0, RTE_IPV4(11, 12, 13, 14),
-	RTE_IPV4(15, 16, 17, 18)}
+	{ { .version_ihl = 0}, 0, 0, 0, 0, 0, IPPROTO_SCTP, 0,
+	RTE_IPV4(11, 12, 13, 14), RTE_IPV4(15, 16, 17, 18)}
 };
 
 static struct rte_flow_item_sctp sctp_spec_1 = {
@@ -828,6 +839,12 @@ test_flow_classify(void)
 	cls_params.name = "flow_classifier";
 	cls_params.socket_id = 0;
 	cls->cls = rte_flow_classifier_create(&cls_params);
+	if (cls->cls == NULL) {
+		printf("Line %i: flow classifier create has failed!\n",
+		       __LINE__);
+		rte_free(cls);
+		return TEST_FAILED;
+	}
 
 	/* initialise ACL table params */
 	table_acl_params.n_rule_fields = RTE_DIM(ipv4_defs);
@@ -872,5 +889,7 @@ test_flow_classify(void)
 
 	return TEST_SUCCESS;
 }
+
+#endif /* !RTE_EXEC_ENV_WINDOWS */
 
 REGISTER_TEST_COMMAND(flow_classify_autotest, test_flow_classify);

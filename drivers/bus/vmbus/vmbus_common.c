@@ -11,10 +11,10 @@
 #include <sys/mman.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_eal.h>
 #include <rte_tailq.h>
 #include <rte_devargs.h>
+#include <rte_lcore.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
 #include <rte_memory.h>
@@ -111,10 +111,8 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 	/* reference driver structure */
 	dev->driver = dr;
 
-	if (dev->device.numa_node < 0) {
-		VMBUS_LOG(WARNING, "  Invalid NUMA socket, default to 0");
-		dev->device.numa_node = 0;
-	}
+	if (dev->device.numa_node < 0 && rte_socket_count() > 1)
+		VMBUS_LOG(INFO, "Device %s is not NUMA-aware", guid);
 
 	/* call the driver probe() function */
 	VMBUS_LOG(INFO, "  probe driver: %s", dr->driver.name);
@@ -131,7 +129,7 @@ vmbus_probe_one_driver(struct rte_vmbus_driver *dr,
 
 /*
  * If device class GUID matches, call the probe function of
- * registere drivers for the vmbus device.
+ * register drivers for the vmbus device.
  * Return -1 if initialization failed,
  * and 1 if no driver found for this device.
  */
@@ -232,7 +230,6 @@ rte_vmbus_register(struct rte_vmbus_driver *driver)
 		"Registered driver %s", driver->driver.name);
 
 	TAILQ_INSERT_TAIL(&rte_vmbus_bus.driver_list, driver, next);
-	driver->bus = &rte_vmbus_bus;
 }
 
 /* unregister vmbus driver */
@@ -240,7 +237,6 @@ void
 rte_vmbus_unregister(struct rte_vmbus_driver *driver)
 {
 	TAILQ_REMOVE(&rte_vmbus_bus.driver_list, driver, next);
-	driver->bus = NULL;
 }
 
 /* Add a device to VMBUS bus */
@@ -297,4 +293,4 @@ struct rte_vmbus_bus rte_vmbus_bus = {
 };
 
 RTE_REGISTER_BUS(vmbus, rte_vmbus_bus.bus);
-RTE_LOG_REGISTER(vmbus_logtype_bus, bus.vmbus, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(vmbus_logtype_bus, NOTICE);

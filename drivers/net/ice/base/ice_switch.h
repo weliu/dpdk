@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_SWITCH_H_
 #define _ICE_SWITCH_H_
 
-#include "ice_common.h"
+#include "ice_type.h"
 #include "ice_protocol_type.h"
 
 #define ICE_SW_CFG_MAX_BUF_LEN 2048
@@ -28,7 +28,10 @@
 #define ICE_PROFID_PPPOE_IPV6_UDP	39
 #define ICE_PROFID_PPPOE_IPV6_OTHER	40
 #define ICE_PROFID_IPV4_GTPC_TEID	41
+#define ICE_PROFID_IPV4_GTPC_NO_TEID		42
 #define ICE_PROFID_IPV4_GTPU_TEID		43
+#define ICE_PROFID_IPV6_GTPC_TEID		44
+#define ICE_PROFID_IPV6_GTPC_NO_TEID		45
 #define ICE_PROFID_IPV6_GTPU_TEID		46
 #define ICE_PROFID_IPV4_GTPU_EH_IPV4_OTHER	47
 #define ICE_PROFID_IPV4_GTPU_IPV4_OTHER		48
@@ -203,7 +206,7 @@ struct ice_fltr_info {
 
 struct ice_update_recipe_lkup_idx_params {
 	u16 rid;
-	u16 fv_idx;
+	u8 fv_idx;
 	bool ignore_valid;
 	u16 mask;
 	bool mask_valid;
@@ -214,6 +217,11 @@ struct ice_adv_lkup_elem {
 	enum ice_protocol_type type;
 	union ice_prot_hdr h_u;	/* Header values */
 	union ice_prot_hdr m_u;	/* Mask of header values to match */
+};
+
+struct ice_prof_type_entry {
+	u16 prof_id;
+	enum ice_sw_tunnel_type type;
 };
 
 struct ice_sw_act_ctrl {
@@ -245,12 +253,23 @@ struct ice_rule_query_data {
 	u16 vsi_handle;
 };
 
+/* This structure allows to pass info about lb_en and lan_en
+ * flags to ice_add_adv_rule. Values in act would be used
+ * only if act_valid was set to true, otherwise dflt
+ * values would be used.
+ */
+struct ice_adv_rule_flags_info {
+	u32 act;
+	u8 act_valid;		/* indicate if flags in act are valid */
+};
+
 struct ice_adv_rule_info {
 	enum ice_sw_tunnel_type tun_type;
 	struct ice_sw_act_ctrl sw_act;
 	u32 priority;
 	u8 rx; /* true means LOOKUP_RX otherwise LOOKUP_TX */
 	u16 fltr_rule_id;
+	struct ice_adv_rule_flags_info flags_info;
 };
 
 /* A collection of one or more four word recipe */
@@ -470,6 +489,8 @@ void ice_remove_vsi_fltr(struct ice_hw *hw, u16 vsi_handle);
 enum ice_status
 ice_cfg_dflt_vsi(struct ice_port_info *pi, u16 vsi_handle, bool set,
 		 u8 direction);
+bool ice_check_if_dflt_vsi(struct ice_port_info *pi, u16 vsi_handle,
+			   bool *rule_exists);
 enum ice_status
 ice_set_vsi_promisc(struct ice_hw *hw, u16 vsi_handle, u8 promisc_mask,
 		    u16 vid);
@@ -535,4 +556,5 @@ bool ice_is_prof_rule(enum ice_sw_tunnel_type type);
 enum ice_status
 ice_update_recipe_lkup_idx(struct ice_hw *hw,
 			   struct ice_update_recipe_lkup_idx_params *params);
+void ice_change_proto_id_to_dvm(void);
 #endif /* _ICE_SWITCH_H_ */

@@ -1,15 +1,17 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2020 ARM Corporation.
+    Copyright(c) 2021 ARM Corporation.
 
-Cross compiling DPDK for ARM64
-==============================
-This chapter describes how to cross compile DPDK for ARM64 from x86 build hosts.
+Cross compiling DPDK for aarch64 and aarch32
+============================================
+
+This chapter describes how to cross compile DPDK for aarch64 on x86 build
+machine and compile 32-bit aarch32 DPDK on aarch64 build machine.
 
 .. note::
 
-   Whilst it is recommended to natively build DPDK on ARM64 (just
-   like with x86), it is also possible to cross compile DPDK for ARM64.
-   An ARM64 cross compiler GNU toolchain or an LLVM/clang toolchain
+   Whilst it is recommended to natively build DPDK on aarch64 (just
+   like with x86), it is also possible to cross compile DPDK for aarch64.
+   An aarch64 cross compiler GNU toolchain or an LLVM/clang toolchain
    may be used for cross-compilation.
 
 
@@ -33,13 +35,14 @@ NUMA is required by most modern machines, not needed for non-NUMA architectures.
    git checkout v2.0.13 -b v2.0.13
    ./autogen.sh
    autoconf -i
-   ./configure --host=aarch64-linux-gnu CC=<compiler> --prefix=<numa install dir>
+   ./configure --host=aarch64-linux-gnu CC=aarch64-none-linux-gnu-gcc --prefix=<numa install dir>
    make install
 
 .. note::
 
-   The compiler above can be either aarch64-linux-gnu-gcc or clang.
-   See below for information on how to get specific compilers.
+   The compiler is ``aarch64-none-linux-gnu-gcc`` if you download GCC
+   using the below guide. If you're using a different compiler,
+   make sure you're using the proper executable name.
 
 The numa header files and lib file is generated in the include and lib folder
 respectively under ``<numa install dir>``.
@@ -53,14 +56,18 @@ To install it in Ubuntu::
 
    sudo apt install pkg-config-aarch64-linux-gnu
 
+For aarch32, install ``pkg-config-arm-linux-gnueabihf``::
+
+   sudo apt install pkg-config-arm-linux-gnueabihf
+
 
 GNU toolchain
 -------------
 
 .. _obtain_GNU_toolchain:
 
-Obtain the cross toolchain
-~~~~~~~~~~~~~~~~~~~~~~~~~~
+Get the cross toolchain
+~~~~~~~~~~~~~~~~~~~~~~~
 
 The latest GNU cross compiler toolchain can be downloaded from:
 https://developer.arm.com/open-source/gnu-toolchain/gnu-a/downloads.
@@ -70,30 +77,27 @@ from the page and use it to generate better code.
 As of this writing 9.2-2019.12 is the newest,
 the following description is an example of this version.
 
-.. code-block:: console
+For aarch64::
 
    wget https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu.tar.xz
-
-Unzip and add into the PATH
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. code-block:: console
-
    tar -xvf gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu.tar.xz
    export PATH=$PATH:<cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/bin
 
+For aarch32::
+
+   wget https://developer.arm.com/-/media/Files/downloads/gnu-a/9.2-2019.12/binrel/gcc-arm-9.2-2019.12-x86_64-arm-none-linux-gnueabihf.tar.xz
+   tar -xvf gcc-arm-9.2-2019.12-x86_64-arm-none-linux-gnueabihf.tar.xz
+   export PATH=$PATH:<cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-arm-none-linux-gnueabihf/bin
+
 .. note::
 
-   For the host requirements and other info, refer to the release note section: https://releases.linaro.org/components/toolchain/binaries/
+   For the host requirements and other info, refer to the release note section:
+   https://releases.linaro.org/components/toolchain/binaries/
 
 .. _augment_the_gnu_toolchain_with_numa_support:
 
 Augment the GNU toolchain with NUMA support
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-.. note::
-
-   This way is optional, an alternative is to use extra CFLAGS and LDFLAGS.
 
 Copy the NUMA header files and lib to the cross compiler's directories:
 
@@ -103,8 +107,62 @@ Copy the NUMA header files and lib to the cross compiler's directories:
    cp <numa_install_dir>/lib/libnuma.a <cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/lib/gcc/aarch64-none-linux-gnu/9.2.1/
    cp <numa_install_dir>/lib/libnuma.so <cross_install_dir>/gcc-arm-9.2-2019.12-x86_64-aarch64-none-linux-gnu/lib/gcc/aarch64-none-linux-gnu/9.2.1/
 
+.. note::
+
+   Using LDFLAGS and CFLAGS is not a viable alternative to copying the files.
+   The Meson docs say it is not recommended, as there are many caveats
+   to their use with Meson, especially when rebuilding the project.
+   A viable alternative would be to use the ``c_args`` and ``c_link_args``
+   options with Meson 0.51.0 and higher:
+
+   .. code-block:: console
+
+      -Dc_args=-I<numa_install_dir>/include -Dc_link_args=-L<numa_install_dir>/lib
+
+For Meson versions lower than 0.51.0, the ``c_args`` and ``c_link_args``
+options do not apply to cross compilation.
+However, the compiler/linker flags may be added to cross files under [properties]:
+
+.. code-block:: console
+
+   c_args = ['-I<numa_install_dir>/include']
+   c_link_args = ['-L<numa_install_dir>/lib']
+
 Cross Compiling DPDK with GNU toolchain using Meson
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. note::
+
+   The names of GCC binaries in cross files differ from the downloaded ones,
+   which have an extra ``-none-`` in their name.
+   Please modify the cross file binaries accordingly
+   when using the downloaded cross compilers.
+
+   An example cross file with modified names and added NUMA paths
+   would look like this:
+
+   .. code-block:: console
+
+      [binaries]
+      c = 'aarch64-none-linux-gnu-gcc'
+      cpp = 'aarch64-none-linux-gnu-cpp'
+      ar = 'aarch64-none-linux-gnu-gcc-ar'
+      strip = 'aarch64-none-linux-gnu-strip'
+      pkgconfig = 'aarch64-linux-gnu-pkg-config' # the downloaded binaries
+         # do not contain a pkgconfig binary, so it is not modified
+      pcap-config = ''
+
+      [host_machine]
+      system = 'linux'
+      cpu_family = 'aarch64'
+      cpu = 'armv8-a'
+      endian = 'little'
+
+      [properties]
+      # Generate binaries that are portable across all Armv8 machines
+      platform = 'generic'
+      c_args = ['-I<numa_install_dir>/include']  # replace <numa_install_dir>
+      c_link_args = ['-L<numa_install_dir>/lib'] # with your path
 
 To cross-compile DPDK on a desired target machine we can use the following
 command::
@@ -113,11 +171,16 @@ command::
    ninja -C cross-build
 
 For example if the target machine is aarch64 we can use the following
-command::
+command, provided the cross file has been modified accordingly::
 
    meson aarch64-build-gcc --cross-file config/arm/arm64_armv8_linux_gcc
    ninja -C aarch64-build-gcc
 
+If the target machine is aarch32 we can use the following command,
+provided the cross file has been modified accordingly::
+
+   meson aarch32-build --cross-file config/arm/arm32_armv8_linux_gcc
+   ninja -C aarch32-build
 
 LLVM/Clang toolchain
 --------------------
@@ -187,50 +250,52 @@ Use the following command to cross-compile DPDK for the target machine::
    meson aarch64-build-clang --cross-file config/arm/arm64_armv8_linux_clang_ubuntu1804
    ninja -C aarch64-build-clang
 
-Supported cross-compilation targets
------------------------------------
+Building for an aarch64 SoC on an aarch64 build machine
+-------------------------------------------------------
 
-If you wish to build for a target which is not among the current cross-files,
-you may use various combinations of implementer/part number::
+If you wish to build on an aarch64 build machine for a different aarch64 SoC,
+you don't need a separate cross toolchain, just a different set of
+configuration options. To build for an aarch64 SoC, use the -Dplatform meson
+option::
 
-   Supported implementers:
-      'generic': Generic armv8
-      '0x41':    Arm
-      '0x43':    Cavium
-      '0x50':    Ampere Computing
-      '0x56':    Marvell ARMADA
-      'dpaa':    NXP DPAA
+   meson soc_build -Dplatform=<target_soc>
 
-   Supported part_numbers for generic:
-      'generic': valid for all armv8-a architectures (unoptimized portable build)
+Substitute <target_soc> with one of the supported SoCs
 
-   Supported part_numbers for 0x41, 0x56, dpaa:
-      '0xd03':   cortex-a53
-      '0xd04':   cortex-a35
-      '0xd09':   cortex-a73
-      '0xd0a':   cortex-a75
-      '0xd0b':   cortex-a76
-      '0xd0c':   neoverse-n1
+.. literalinclude:: ../../../config/arm/meson.build
+   :start-after: Start of SoCs list
+   :end-before: End of SoCs list
 
-   Supported part_numbers for 0x43:
-      '0xa1':    thunderxt88
-      '0xa2':    thunderxt81
-      '0xa3':    thunderxt83
-      '0xaf':    thunderx2t99
-      '0xb2':    octeontx2
+These SoCs are also used in cross files, e.g.::
 
-   Supported part_numbers for 0x50:
-      '0x0':     emag
+   [properties]
+   # Generate binaries that are portable across all Armv8 machines
+   platform = 'generic'
 
-Other cross file options
-------------------------
+Supported SoC configuration
+---------------------------
 
-There are other options you may specify in a cross file to tailor the build::
+The SoC configuration is a combination of implementer and CPU part number
+configuration and SoC-specific configuration::
 
-   Supported extra configuration
-      max_numa_nodes = n  # will set RTE_MAX_NUMA_NODES
-      max_lcores = n      # will set RTE_MAX_LCORE
+   soc_<name> = {
+      'description': 'SoC Description',  # mandatory
+      'implementer': <implementer_id>,   # mandatory
+      'part_number': <part_number>,      # mandatory
+      'numa': false,  # optional, specify for non-NUMA SoCs
+      'enable_drivers': 'common/*,bus/*',  # optional, comma-separated list of
+                              # drivers to build, wildcards are accepted
+      'disable_drivers': 'crypto/*',       # optional, comma-separated list of
+                              # drivers to disable, wildcards are accepted
+      'flags': [
+         ['RTE_MAX_LCORE', '16'],
+         ['RTE_MAX_NUMA_NODES', '1']
+      ]               # optional, list of DPDK options that will be added
+                      # or overwritten
+   }
 
-      numa = false        # set to false to force building for a non-NUMA system
-         # if not set or set to true, the build system will build for a NUMA
-         # system only if libnuma is installed
+Where <implementer_id> is a key defined in the implementers dictionary
+in config/arm/meson.build (e.g. 0x41) and part_number is a key defined
+in implementers[<implementer_id>]['part_number_config'] dictionary
+(i.e. the part number must be defined for the implementer,
+e.g. for 0x41, a valid value is 0xd49, which is the neoverse-n2 SoC).

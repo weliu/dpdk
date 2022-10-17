@@ -6,7 +6,9 @@
 #define _EVT_COMMON_
 
 #include <rte_common.h>
+#include <rte_crypto.h>
 #include <rte_debug.h>
+#include <rte_event_crypto_adapter.h>
 #include <rte_eventdev.h>
 #include <rte_service.h>
 
@@ -39,6 +41,7 @@ enum evt_prod_type {
 	EVT_PROD_TYPE_SYNT,          /* Producer type Synthetic i.e. CPU. */
 	EVT_PROD_TYPE_ETH_RX_ADPTR,  /* Producer type Eth Rx Adapter. */
 	EVT_PROD_TYPE_EVENT_TIMER_ADPTR,  /* Producer type Timer Adapter. */
+	EVT_PROD_TYPE_EVENT_CRYPTO_ADPTR,  /* Producer type Crypto Adapter. */
 	EVT_PROD_TYPE_MAX,
 };
 
@@ -55,22 +58,31 @@ struct evt_options {
 	uint8_t timdev_cnt;
 	uint8_t nb_timer_adptrs;
 	uint8_t timdev_use_burst;
+	uint8_t per_port_pool;
 	uint8_t sched_type_list[EVT_MAX_STAGES];
 	uint16_t mbuf_sz;
 	uint16_t wkr_deq_dep;
+	uint16_t vector_size;
+	uint16_t eth_queues;
 	uint32_t nb_flows;
 	uint32_t tx_first;
+	uint16_t tx_pkt_sz;
 	uint32_t max_pkt_sz;
+	uint32_t prod_enq_burst_sz;
 	uint32_t deq_tmo_nsec;
 	uint32_t q_priority:1;
 	uint32_t fwd_latency:1;
+	uint32_t ena_vector : 1;
 	uint64_t nb_pkts;
 	uint64_t nb_timers;
 	uint64_t expiry_nsec;
 	uint64_t max_tmo_nsec;
+	uint64_t vector_tmo_nsec;
 	uint64_t timer_tick_nsec;
 	uint64_t optm_timer_tick_nsec;
 	enum evt_prod_type prod_type;
+	enum rte_event_crypto_adapter_mode crypto_adptr_mode;
+	enum rte_crypto_op_type crypto_op_type;
 };
 
 static inline bool

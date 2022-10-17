@@ -33,6 +33,13 @@
 
 #define DPAA_SGT_MAX_ENTRIES 16 /* maximum number of entries in SG Table */
 
+/* Maximum SG segments supported on all cores*/
+#define DPAA_MAX_SGS 128
+/* SG pool size */
+#define DPAA_POOL_SIZE 2048
+/* SG pool cache size */
+#define DPAA_POOL_CACHE_SIZE 256
+
 /* RX queue tail drop threshold (CGR Based) in frame count */
 #define CGR_RX_PERFQ_THRESH 256
 #define CGR_TX_CGR_THRESH 512
@@ -74,16 +81,15 @@
 #define DPAA_DEBUG_FQ_TX_ERROR   1
 
 #define DPAA_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_L2_PAYLOAD | \
-	ETH_RSS_IP | \
-	ETH_RSS_UDP | \
-	ETH_RSS_TCP | \
-	ETH_RSS_SCTP)
+	RTE_ETH_RSS_L2_PAYLOAD | \
+	RTE_ETH_RSS_IP | \
+	RTE_ETH_RSS_UDP | \
+	RTE_ETH_RSS_TCP | \
+	RTE_ETH_RSS_SCTP)
 
-#define DPAA_TX_CKSUM_OFFLOAD_MASK (             \
-		PKT_TX_IP_CKSUM |                \
-		PKT_TX_TCP_CKSUM |               \
-		PKT_TX_UDP_CKSUM)
+#define DPAA_TX_CKSUM_OFFLOAD_MASK (RTE_MBUF_F_TX_IP_CKSUM |                \
+		RTE_MBUF_F_TX_TCP_CKSUM |               \
+		RTE_MBUF_F_TX_UDP_CKSUM)
 
 /* DPAA Frame descriptor macros */
 
@@ -103,6 +109,18 @@
 #define DPAA_DEFAULT_RXQ_VSP_ID		1
 
 #define FMC_FILE "/tmp/fmc.bin"
+
+extern struct rte_mempool *dpaa_tx_sg_pool;
+
+/* structure to free external and indirect
+ * buffers.
+ */
+struct dpaa_sw_buf_free {
+	/* To which packet this segment belongs */
+	uint16_t pkt_id;
+	/* The actual segment */
+	struct rte_mbuf *seg;
+};
 
 /* Each network interface is represented by one of these */
 struct dpaa_if {

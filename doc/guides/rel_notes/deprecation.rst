@@ -14,21 +14,31 @@ Deprecation Notices
 * kvargs: The function ``rte_kvargs_process`` will get a new parameter
   for returning key match count. It will ease handling of no-match case.
 
-* eal: The function ``rte_eal_remote_launch`` will return new error codes
-  after read or write error on the pipe, instead of calling ``rte_panic``.
+* eal: RTE_FUNC_PTR_OR_* macros have been marked deprecated and will be removed
+  in the future. Applications can use ``devtools/cocci/func_or_ret.cocci``
+  to update their code.
 
 * rte_atomicNN_xxx: These APIs do not take memory order parameter. This does
   not allow for writing optimized code for all the CPU architectures supported
-  in DPDK. DPDK will adopt C11 atomic operations semantics and provide wrappers
-  using C11 atomic built-ins. These wrappers must be used for patches that
-  need to be merged in 20.08 onwards. This change will not introduce any
-  performance degradation.
+  in DPDK. DPDK has adopted the atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations must be used for patches that need to be merged in 20.08 onwards.
+  This change will not introduce any performance degradation.
 
 * rte_smp_*mb: These APIs provide full barrier functionality. However, many
-  use cases do not require full barriers. To support such use cases, DPDK will
-  adopt C11 barrier semantics and provide wrappers using C11 atomic built-ins.
-  These wrappers must be used for patches that need to be merged in 20.08
-  onwards. This change will not introduce any performance degradation.
+  use cases do not require full barriers. To support such use cases, DPDK has
+  adopted atomic operations from
+  https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html. These
+  operations and a new wrapper ``rte_atomic_thread_fence`` instead of
+  ``__atomic_thread_fence`` must be used for patches that need to be merged in
+  20.08 onwards. This change will not introduce any performance degradation.
+
+* kni: The KNI kernel module and library are not recommended for use by new
+  applications - other technologies such as virtio-user are recommended instead.
+  Following the DPDK technical board
+  `decision <https://mails.dpdk.org/archives/dev/2021-January/197077.html>`_
+  and `refinement <https://mails.dpdk.org/archives/dev/2022-June/243596.html>`_,
+  the KNI kernel module, library and PMD will be removed from the DPDK 23.11 release.
 
 * lib: will fix extending some enum/define breaking the ABI. There are multiple
   samples in DPDK that enum/define terminated with a ``.*MAX.*`` value which is
@@ -39,62 +49,13 @@ Deprecation Notices
   ``RTE_ETH_FLOW_MAX`` is one sample of the mentioned case, adding a new flow
   type will break the ABI because of ``flex_mask[RTE_ETH_FLOW_MAX]`` array
   usage in following public struct hierarchy:
-  ``rte_eth_fdir_flex_conf -> rte_fdir_conf -> rte_eth_conf (in the middle)``.
+  ``rte_eth_fdir_flex_conf -> rte_eth_fdir_conf -> rte_eth_conf (in the middle)``.
   Need to identify this kind of usages and fix in 20.11, otherwise this blocks
   us extending existing enum/define.
   One solution can be using a fixed size array instead of ``.*MAX.*`` value.
 
-* ethdev: The flow director API, including ``rte_eth_conf.fdir_conf`` field,
-  and the related structures (``rte_fdir_*`` and ``rte_eth_fdir_*``),
-  will be removed in DPDK 20.11.
-
-* ethdev: New offload flags ``DEV_RX_OFFLOAD_FLOW_MARK`` will be added in 19.11.
-  This will allow application to enable or disable PMDs from updating
-  ``rte_mbuf::hash::fdir``.
-  This scheme will allow PMDs to avoid writes to ``rte_mbuf`` fields on Rx and
-  thereby improve Rx performance if application wishes do so.
-  In 19.11 PMDs will still update the field even when the offload is not
-  enabled.
-
-* ethdev: ``uint32_t max_rx_pkt_len`` field of ``struct rte_eth_rxmode``, will be
-  replaced by a new ``uint32_t mtu`` field of ``struct rte_eth_conf`` in v21.11.
-  The new ``mtu`` field will be used to configure the initial device MTU via
-  ``rte_eth_dev_configure()`` API.
-  Later MTU can be changed by ``rte_eth_dev_set_mtu()`` API as done now.
-  The existing ``(struct rte_eth_dev)->data->mtu`` variable will be used to store
-  the configured ``mtu`` value,
-  and this new ``(struct rte_eth_dev)->data->dev_conf.mtu`` variable will
-  be used to store the user configuration request.
-  Unlike ``max_rx_pkt_len``, which was valid only when ``JUMBO_FRAME`` enabled,
-  ``mtu`` field will be always valid.
-  When ``mtu`` config is not provided by the application, default ``RTE_ETHER_MTU``
-  value will be used.
-  ``(struct rte_eth_dev)->data->mtu`` should be updated after MTU set successfully,
-  either by ``rte_eth_dev_configure()`` or ``rte_eth_dev_set_mtu()``.
-
-  An application may need to configure device for a specific Rx packet size, like for
-  cases ``DEV_RX_OFFLOAD_SCATTER`` is not supported and device received packet size
-  can't be bigger than Rx buffer size.
-  To cover these cases an application needs to know the device packet overhead to be
-  able to calculate the ``mtu`` corresponding to a Rx buffer size, for this
-  ``(struct rte_eth_dev_info).max_rx_pktlen`` will be kept,
-  the device packet overhead can be calculated as:
-  ``(struct rte_eth_dev_info).max_rx_pktlen - (struct rte_eth_dev_info).max_mtu``
-
-* ethdev: ``rx_descriptor_done`` dev_ops and ``rte_eth_rx_descriptor_done``
-  will be removed in 21.11.
-  Existing ``rte_eth_rx_descriptor_status`` and ``rte_eth_tx_descriptor_status``
-  APIs can be used as replacement.
-
-* ethdev: The port mirroring API can be replaced with a more fine grain flow API.
-  The structs ``rte_eth_mirror_conf``, ``rte_eth_vlan_mirror`` and the functions
-  ``rte_eth_mirror_rule_set``, ``rte_eth_mirror_rule_reset`` will be marked
-  as deprecated in DPDK 20.11, along with the associated macros ``ETH_MIRROR_*``.
-  This API will be fully removed in DPDK 21.11.
-
-* ethdev: Attribute ``shared`` of the ``struct rte_flow_action_count``
-  is deprecated and will be removed in DPDK 21.11. Shared counters should
-  be managed using shared actions API (``rte_flow_shared_action_create`` etc).
+* ethdev: Announce moving from dedicated modify function for each field,
+  to using the general ``rte_flow_modify_field`` action.
 
 * ethdev: The flow API matching pattern structures, ``struct rte_flow_item_*``,
   should start with relevant protocol header.
@@ -113,20 +74,25 @@ Deprecation Notices
   will be limited to maximum 256 queues.
   Also compile time flag ``RTE_ETHDEV_QUEUE_STAT_CNTRS`` will be removed.
 
-* ethdev: The offload flag ``PKT_RX_EIP_CKSUM_BAD`` will be removed and
-  replaced by the new flag ``PKT_RX_OUTER_IP_CKSUM_BAD``. The new name is more
-  consistent with existing outer header checksum status flag naming, which
-  should help in reducing confusion about its usage.
+* ethdev: Flow actions ``PF`` and ``VF`` have been deprecated since DPDK 21.11
+  and are yet to be removed. That still has not happened because there are net
+  drivers which support combined use of either action ``PF`` or action ``VF``
+  with action ``QUEUE``, namely, i40e, ixgbe and txgbe (L2 tunnel rule).
+  It is unclear whether it is acceptable to just drop support for
+  such a complex use case, so maintainers of the said drivers
+  should take a closer look at this and provide assistance.
 
-* sched: To allow more traffic classes, flexible mapping of pipe queues to
-  traffic classes, and subport level configuration of pipes and queues
-  changes will be made to macros, data structures and API functions defined
-  in "rte_sched.h". These changes are aligned to improvements suggested in the
-  RFC https://mails.dpdk.org/archives/dev/2018-November/120035.html.
+* ethdev: Actions ``OF_DEC_NW_TTL``, ``SET_IPV4_SRC``, ``SET_IPV4_DST``,
+  ``SET_IPV6_SRC``, ``SET_IPV6_DST``, ``SET_TP_SRC``, ``SET_TP_DST``,
+  ``DEC_TTL``, ``SET_TTL``, ``SET_MAC_SRC``, ``SET_MAC_DST``, ``INC_TCP_SEQ``,
+  ``DEC_TCP_SEQ``, ``INC_TCP_ACK``, ``DEC_TCP_ACK``, ``SET_IPV4_DSCP``,
+  ``SET_IPV6_DSCP``, ``SET_TAG``, ``SET_META`` are marked as legacy and
+  superseded by the generic MODIFY_FIELD action.
+  The legacy actions should be deprecated in 22.07, once MODIFY_FIELD
+  alternative is implemented.
+  The legacy actions should be removed in DPDK 22.11.
 
-* metrics: The function ``rte_metrics_init`` will have a non-void return
-  in order to notify errors instead of calling ``rte_exit``.
-
-* cmdline: ``cmdline`` structure will be made opaque to hide platform-specific
-  content. On Linux and FreeBSD, supported prior to DPDK 20.11,
-  original structure will be kept until DPDK 21.11.
+* cryptodev: The function ``rte_cryptodev_cb_fn`` will be updated
+  to have another parameter ``qp_id`` to return the queue pair ID
+  which got error interrupt to the application,
+  so that application can reset that particular queue pair.

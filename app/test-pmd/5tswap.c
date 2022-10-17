@@ -27,9 +27,9 @@ swap_mac(struct rte_ether_hdr *eth_hdr)
 	struct rte_ether_addr addr;
 
 	/* Swap dest and src mac addresses. */
-	rte_ether_addr_copy(&eth_hdr->d_addr, &addr);
-	rte_ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
-	rte_ether_addr_copy(&addr, &eth_hdr->s_addr);
+	rte_ether_addr_copy(&eth_hdr->dst_addr, &addr);
+	rte_ether_addr_copy(&eth_hdr->src_addr, &eth_hdr->dst_addr);
+	rte_ether_addr_copy(&addr, &eth_hdr->src_addr);
 }
 
 static inline void
@@ -185,9 +185,22 @@ pkt_burst_5tuple_swap(struct fwd_stream *fs)
 	get_end_cycles(fs, start_tsc);
 }
 
+static void
+stream_init_5tuple_swap(struct fwd_stream *fs)
+{
+	bool rx_stopped, tx_stopped;
+
+	rx_stopped = ports[fs->rx_port].rxq[fs->rx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	tx_stopped = ports[fs->tx_port].txq[fs->tx_queue].state ==
+						RTE_ETH_QUEUE_STATE_STOPPED;
+	fs->disabled = rx_stopped || tx_stopped;
+}
+
 struct fwd_engine five_tuple_swap_fwd_engine = {
 	.fwd_mode_name  = "5tswap",
 	.port_fwd_begin = NULL,
 	.port_fwd_end   = NULL,
+	.stream_init    = stream_init_5tuple_swap,
 	.packet_fwd     = pkt_burst_5tuple_swap,
 };

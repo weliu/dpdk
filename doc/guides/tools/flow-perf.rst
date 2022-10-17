@@ -100,6 +100,46 @@ The command line options are:
 	Set the number of needed cores to insert/delete rte_flow rules.
 	Default cores count is 1.
 
+*       ``--random-priority=N,S``
+        Create flows with the priority attribute set randomly between 0 to N - 1
+        and use S as seed for the pseudo-random number generator.
+
+*	``--meter-profile-alg``
+	Set the traffic metering algorithm.
+	Example: meter-profile-alg=srtcmp, default algorithm is srtcm_rfc2697
+
+*	``--unique-data``
+	Flag to set using unique data for all actions that support data,
+	Such as header modify and encap actions. Default is using fixed
+	data for any action that support data for all flows.
+
+*	``--rxq=N``
+	Set the count of receive queues, default is 1.
+
+*	``--txq=N``
+	Set the count of send queues, default is 1.
+
+*	``--rxd=N``
+	Set the count of rxd, default is 256.
+
+*	``--txd=N``
+	Set the count of txd, default is 256.
+
+*	``--mbuf-size=N``
+	Set the size of mbuf, default size is 2048.
+
+*	``--mbuf-cache-size=N``
+	Set the size of mbuf cache, default size is 512.
+
+*	``--total-mbuf-count=N``
+	Set the count of total mbuf number, default count is 32000.
+
+*	``--meter-profile=N1,N2,N3``
+	Set the CIR, CBS and EBS parameters, default values are 1250000, 156250 and 0.
+
+*	``--packet-mode``
+	Enable packet mode for meter profile.
+
 Attributes:
 
 *	``--ingress``
@@ -200,6 +240,10 @@ Actions:
 	Add port redirection action to all flows actions.
 	Port redirection destination is defined in user_parameters.h
 	under PORT_ID_DST, default value = 1.
+
+       It can also has optional parameter like --port-id=N[,M] to
+       specify the destination port, the number of values should be
+       the same with number of set bits in portmask.
 
 *	``--rss``
 	Add RSS action to all flows actions,
@@ -346,6 +390,10 @@ Actions:
 *	``--vxlan-decap``
 	Add vxlan decap action to all flows actions.
 
-*       ``--meter``
-        Add meter action to all flows actions.
-        Currently, 1 meter profile -> N meter rules -> N rte flows.
+*	``--policy-mtr=<str>``
+	Add policy-mtr to create meter with policy and specify policy actions.
+	Example: policy-mtr=rss,mark::drop
+
+*	``--meter``
+	Add meter action to all flows actions.
+	Currently, 1 meter profile -> N meter rules -> N rte flows.

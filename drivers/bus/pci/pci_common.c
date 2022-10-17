@@ -13,9 +13,10 @@
 #include <rte_errno.h>
 #include <rte_interrupts.h>
 #include <rte_log.h>
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
+#include <rte_lcore.h>
 #include <rte_per_lcore.h>
 #include <rte_memory.h>
 #include <rte_eal.h>
@@ -24,6 +25,7 @@
 #include <rte_common.h>
 #include <rte_devargs.h>
 #include <rte_vfio.h>
+#include <rte_tailq.h>
 
 #include "private.h"
 
@@ -43,6 +45,38 @@ const char *rte_pci_get_sysfs_path(void)
 	return path;
 }
 
+#ifdef RTE_EXEC_ENV_WINDOWS
+#define asprintf pci_asprintf
+
+static int
+__rte_format_printf(2, 3)
+pci_asprintf(char **buffer, const char *format, ...)
+{
+	int size, ret;
+	va_list arg;
+
+	va_start(arg, format);
+	size = vsnprintf(NULL, 0, format, arg);
+	va_end(arg);
+	if (size < 0)
+		return -1;
+	size++;
+
+	*buffer = malloc(size);
+	if (*buffer == NULL)
+		return -1;
+
+	va_start(arg, format);
+	ret = vsnprintf(*buffer, size, format, arg);
+	va_end(arg);
+	if (ret != size - 1) {
+		free(*buffer);
+		return -1;
+	}
+	return ret;
+}
+#endif /* RTE_EXEC_ENV_WINDOWS */
+
 static struct rte_devargs *
 pci_devargs_lookup(const struct rte_pci_addr *pci_addr)
 {
@@ -58,7 +92,7 @@ pci_devargs_lookup(const struct rte_pci_addr *pci_addr)
 }
 
 void
-pci_name_set(struct rte_pci_device *dev)
+pci_common_set(struct rte_pci_device *dev)
 {
 	struct rte_devargs *devargs;
 
@@ -79,6 +113,19 @@ pci_name_set(struct rte_pci_device *dev)
 	else
 		/* Otherwise, it uses the internal, canonical form. */
 		dev->device.name = dev->name;
+
+	if (asprintf(&dev->bus_info, "vendor_id=%"PRIx16", device_id=%"PRIx16,
+			dev->id.vendor_id, dev->id.device_id) != -1)
+		dev->device.bus_info = dev->bus_info;
+}
+
+void
+pci_free(struct rte_pci_device *dev)
+{
+	if (dev == NULL)
+		return;
+	free(dev->bus_info);
+	free(dev);
 }
 
 /* map a particular resource from a file */
@@ -189,10 +236,8 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 		return 1;
 	}
 
-	if (dev->device.numa_node < 0) {
-		RTE_LOG(WARNING, EAL, "  Invalid NUMA socket, default to 0\n");
-		dev->device.numa_node = 0;
-	}
+	if (dev->device.numa_node < 0 && rte_socket_count() > 1)
+		RTE_LOG(INFO, EAL, "Device %s is not NUMA-aware\n", dev->name);
 
 	already_probed = rte_dev_is_probed(&dev->device);
 	if (already_probed && !(dr->drv_flags & RTE_PCI_DRV_PROBE_AGAIN)) {
@@ -204,11 +249,6 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 	RTE_LOG(DEBUG, EAL, "  probe driver: %x:%x %s\n", dev->id.vendor_id,
 		dev->id.device_id, dr->driver.name);
 
-	/*
-	 * reference driver structure
-	 * This needs to be before rte_pci_map_device(), as it enables to use
-	 * driver flags for adjusting configuration.
-	 */
 	if (!already_probed) {
 		enum rte_iova_mode dev_iova_mode;
 		enum rte_iova_mode iova_mode;
@@ -223,15 +263,43 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 			return -EINVAL;
 		}
 
-		dev->driver = dr;
-	}
+		/* Allocate interrupt instance for pci device */
+		dev->intr_handle =
+			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
+		if (dev->intr_handle == NULL) {
+			RTE_LOG(ERR, EAL,
+				"Failed to create interrupt instance for %s\n",
+				dev->device.name);
+			return -ENOMEM;
+		}
 
-	if (!already_probed && (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING)) {
-		/* map resources for devices that use igb_uio */
-		ret = rte_pci_map_device(dev);
-		if (ret != 0) {
-			dev->driver = NULL;
-			return ret;
+		dev->vfio_req_intr_handle =
+			rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
+		if (dev->vfio_req_intr_handle == NULL) {
+			rte_intr_instance_free(dev->intr_handle);
+			dev->intr_handle = NULL;
+			RTE_LOG(ERR, EAL,
+				"Failed to create vfio req interrupt instance for %s\n",
+				dev->device.name);
+			return -ENOMEM;
+		}
+
+		/*
+		 * Reference driver structure.
+		 * This needs to be before rte_pci_map_device(), as it enables
+		 * to use driver flags for adjusting configuration.
+		 */
+		dev->driver = dr;
+		if (dev->driver->drv_flags & RTE_PCI_DRV_NEED_MAPPING) {
+			ret = rte_pci_map_device(dev);
+			if (ret != 0) {
+				dev->driver = NULL;
+				rte_intr_instance_free(dev->vfio_req_intr_handle);
+				dev->vfio_req_intr_handle = NULL;
+				rte_intr_instance_free(dev->intr_handle);
+				dev->intr_handle = NULL;
+				return ret;
+			}
 		}
 	}
 
@@ -252,6 +320,10 @@ rte_pci_probe_one_driver(struct rte_pci_driver *dr,
 			!(ret > 0 &&
 				(dr->drv_flags & RTE_PCI_DRV_KEEP_MAPPED_RES)))
 			rte_pci_unmap_device(dev);
+		rte_intr_instance_free(dev->vfio_req_intr_handle);
+		dev->vfio_req_intr_handle = NULL;
+		rte_intr_instance_free(dev->intr_handle);
+		dev->intr_handle = NULL;
 	} else {
 		dev->device.driver = &dr->driver;
 	}
@@ -296,6 +368,11 @@ rte_pci_detach_dev(struct rte_pci_device *dev)
 	if (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING)
 		/* unmap resources for devices that use igb_uio */
 		rte_pci_unmap_device(dev);
+
+	rte_intr_instance_free(dev->intr_handle);
+	dev->intr_handle = NULL;
+	rte_intr_instance_free(dev->vfio_req_intr_handle);
+	dev->vfio_req_intr_handle = NULL;
 
 	return 0;
 }
@@ -359,6 +436,32 @@ pci_probe(void)
 	return (probed && probed == failed) ? -1 : 0;
 }
 
+static int
+pci_cleanup(void)
+{
+	struct rte_pci_device *dev, *tmp_dev;
+	int error = 0;
+
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_pci_bus.device_list, next, tmp_dev) {
+		struct rte_pci_driver *drv = dev->driver;
+		int ret = 0;
+
+		if (drv == NULL || drv->remove == NULL)
+			continue;
+
+		ret = drv->remove(dev);
+		if (ret < 0) {
+			rte_errno = errno;
+			error = -1;
+		}
+		dev->driver = NULL;
+		dev->device.driver = NULL;
+		free(dev);
+	}
+
+	return error;
+}
+
 /* dump one device */
 static int
 pci_dump_one_device(FILE *f, struct rte_pci_device *dev)
@@ -408,7 +511,6 @@ void
 rte_pci_register(struct rte_pci_driver *driver)
 {
 	TAILQ_INSERT_TAIL(&rte_pci_bus.driver_list, driver, next);
-	driver->bus = &rte_pci_bus;
 }
 
 /* unregister a driver */
@@ -416,7 +518,6 @@ void
 rte_pci_unregister(struct rte_pci_driver *driver)
 {
 	TAILQ_REMOVE(&rte_pci_bus.driver_list, driver, next);
-	driver->bus = NULL;
 }
 
 /* Add a device to PCI bus */
@@ -571,7 +672,7 @@ pci_unplug(struct rte_device *dev)
 	if (ret == 0) {
 		rte_pci_remove_device(pdev);
 		rte_devargs_remove(dev->devargs);
-		free(pdev);
+		pci_free(pdev);
 	}
 	return ret;
 }
@@ -746,14 +847,44 @@ rte_pci_find_ext_capability(struct rte_pci_device *dev, uint32_t cap)
 	return 0;
 }
 
+int
+rte_pci_set_bus_master(struct rte_pci_device *dev, bool enable)
+{
+	uint16_t old_cmd, cmd;
+
+	if (rte_pci_read_config(dev, &old_cmd, sizeof(old_cmd),
+				RTE_PCI_COMMAND) < 0) {
+		RTE_LOG(ERR, EAL, "error in reading PCI command register\n");
+		return -1;
+	}
+
+	if (enable)
+		cmd = old_cmd | RTE_PCI_COMMAND_MASTER;
+	else
+		cmd = old_cmd & ~RTE_PCI_COMMAND_MASTER;
+
+	if (cmd == old_cmd)
+		return 0;
+
+	if (rte_pci_write_config(dev, &cmd, sizeof(cmd),
+				 RTE_PCI_COMMAND) < 0) {
+		RTE_LOG(ERR, EAL, "error in writing PCI command register\n");
+		return -1;
+	}
+
+	return 0;
+}
+
 struct rte_pci_bus rte_pci_bus = {
 	.bus = {
 		.scan = rte_pci_scan,
 		.probe = pci_probe,
+		.cleanup = pci_cleanup,
 		.find_device = pci_find_device,
 		.plug = pci_plug,
 		.unplug = pci_unplug,
 		.parse = pci_parse,
+		.devargs_parse = rte_pci_devargs_parse,
 		.dma_map = pci_dma_map,
 		.dma_unmap = pci_dma_unmap,
 		.get_iommu_class = rte_pci_get_iommu_class,

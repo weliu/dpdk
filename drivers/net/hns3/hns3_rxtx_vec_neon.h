@@ -1,9 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2020 Hisilicon Limited.
+ * Copyright(c) 2020-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_RXTX_VEC_NEON_H_
-#define _HNS3_RXTX_VEC_NEON_H_
+#ifndef HNS3_RXTX_VEC_NEON_H
+#define HNS3_RXTX_VEC_NEON_H
 
 #include <arm_neon.h>
 
@@ -84,7 +84,7 @@ hns3_xmit_fixed_burst_vec(void *__restrict tx_queue,
 	txq->next_to_use = next_to_use;
 	txq->tx_bd_ready -= nb_tx;
 
-	hns3_write_reg_opt(txq->io_tail_reg, nb_tx);
+	hns3_write_txq_tail_reg(txq, nb_tx);
 
 	return nb_tx;
 }
@@ -98,7 +98,6 @@ hns3_desc_parse_field(struct hns3_rx_queue *rxq,
 	uint32_t l234_info, ol_info, bd_base_info;
 	struct rte_mbuf *pkt;
 	uint32_t retcode = 0;
-	uint32_t cksum_err;
 	uint32_t i;
 	int ret;
 
@@ -106,22 +105,18 @@ hns3_desc_parse_field(struct hns3_rx_queue *rxq,
 		pkt = sw_ring[i].mbuf;
 
 		/* init rte_mbuf.rearm_data last 64-bit */
-		pkt->ol_flags = PKT_RX_RSS_HASH;
+		pkt->ol_flags = RTE_MBUF_F_RX_RSS_HASH;
 
 		l234_info = rxdp[i].rx.l234_info;
 		ol_info = rxdp[i].rx.ol_info;
 		bd_base_info = rxdp[i].rx.bd_base_info;
-		ret = hns3_handle_bdinfo(rxq, pkt, bd_base_info,
-					 l234_info, &cksum_err);
+		ret = hns3_handle_bdinfo(rxq, pkt, bd_base_info, l234_info);
 		if (unlikely(ret)) {
 			retcode |= 1u << i;
 			continue;
 		}
 
 		pkt->packet_type = hns3_rx_calc_ptype(rxq, l234_info, ol_info);
-		if (likely(bd_base_info & BIT(HNS3_RXD_L3L4P_B)))
-			hns3_rx_set_cksum_flag(pkt, pkt->packet_type,
-					       cksum_err);
 
 		/* Increment bytes counter */
 		rxq->basic_stats.bytes += pkt->pkt_len;
@@ -160,6 +155,14 @@ hns3_recv_burst_vec(struct hns3_rx_queue *__restrict rxq,
 		rxq->crc_len, /* sub crc on data_len */
 		0, 0, 0,      /* ignore non-length fields */
 	};
+
+	/* compile-time verifies the shuffle mask */
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, pkt_len) !=
+			 offsetof(struct rte_mbuf, rx_descriptor_fields1) + 4);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, data_len) !=
+			 offsetof(struct rte_mbuf, rx_descriptor_fields1) + 8);
+	RTE_BUILD_BUG_ON(offsetof(struct rte_mbuf, hash.rss) !=
+			 offsetof(struct rte_mbuf, rx_descriptor_fields1) + 12);
 
 	for (pos = 0; pos < nb_pkts; pos += HNS3_DEFAULT_DESCS_PER_LOOP,
 				     rxdp += HNS3_DEFAULT_DESCS_PER_LOOP) {
@@ -296,4 +299,4 @@ hns3_recv_burst_vec(struct hns3_rx_queue *__restrict rxq,
 
 	return nb_rx;
 }
-#endif /* _HNS3_RXTX_VEC_NEON_H_ */
+#endif /* HNS3_RXTX_VEC_NEON_H */

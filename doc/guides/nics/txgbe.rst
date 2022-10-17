@@ -1,5 +1,5 @@
 ..  SPDX-License-Identifier: BSD-3-Clause
-    Copyright(c) 2015-2020.
+    Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
 
 TXGBE Poll Mode Driver
 ======================
@@ -86,7 +86,7 @@ TXGBE PMD provides the following log types available for control:
 
 - ``pmd.net.txgbe.bp`` (default level is **notice**)
 
-  Extra logging of auto-negtiation process for backplane NICs.
+  Extra logging of auto-negotiation process for backplane NICs.
   Supply ``--log-level=pmd.net.txgbe.bp:debug`` to view messages.
 
 Runtime Options
@@ -110,7 +110,7 @@ Please note that following ``devargs`` are only set for backplane NICs.
 
   Toggle behavior to enable/disable polling mode to receive AN interrupt.
 
-- ``present`` (default **1**)
+- ``present`` (default **0**)
 
   Toggle behavior to use present mode or init mode.
 
@@ -156,7 +156,7 @@ ingress or egress traffic, alter its fate and query related counters according
 to any number of user-defined rules.
 
 A flow rule is the combination of attributes with a matching pattern and a list of
-actions. Theorically one rule can match more than one filters, which named for
+actions. Theoretically one rule can match more than one filters, which named for
 different patterns and actions. Like ethertype filter defines a rule in pattern:
 the first not void item can be ETH, and the next not void item must be END.
 

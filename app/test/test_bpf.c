@@ -10,19 +10,32 @@
 #include <rte_memory.h>
 #include <rte_debug.h>
 #include <rte_hexdump.h>
+#include <rte_malloc.h>
 #include <rte_random.h>
 #include <rte_byteorder.h>
 #include <rte_errno.h>
+#include "test.h"
+
+#if !defined(RTE_LIB_BPF)
+
+static int
+test_bpf(void)
+{
+	printf("BPF not supported, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+
 #include <rte_bpf.h>
 #include <rte_ether.h>
 #include <rte_ip.h>
 
-#include "test.h"
 
 /*
  * Basic functional tests for librte_bpf.
  * The main procedure - load eBPF program, execute it and
- * compare restuls with expected values.
+ * compare results with expected values.
  */
 
 struct dummy_offset {
@@ -58,6 +71,9 @@ struct dummy_mbuf {
 
 #define TEST_SHIFT_1	15
 #define TEST_SHIFT_2	33
+
+#define TEST_SHIFT32_MASK	(CHAR_BIT * sizeof(uint32_t) - 1)
+#define TEST_SHIFT64_MASK	(CHAR_BIT * sizeof(uint64_t) - 1)
 
 #define TEST_JCC_1	0
 #define TEST_JCC_2	-123
@@ -548,13 +564,23 @@ static const struct ebpf_insn test_shift1_prog[] = {
 		.off = offsetof(struct dummy_vect8, out[1].u64),
 	},
 	{
-		.code = (BPF_ALU | BPF_RSH | BPF_X),
-		.dst_reg = EBPF_REG_2,
-		.src_reg = EBPF_REG_4,
+		.code = (BPF_ALU | BPF_AND | BPF_K),
+		.dst_reg = EBPF_REG_4,
+		.imm = TEST_SHIFT64_MASK,
 	},
 	{
 		.code = (EBPF_ALU64 | BPF_LSH | BPF_X),
 		.dst_reg = EBPF_REG_3,
+		.src_reg = EBPF_REG_4,
+	},
+	{
+		.code = (BPF_ALU | BPF_AND | BPF_K),
+		.dst_reg = EBPF_REG_4,
+		.imm = TEST_SHIFT32_MASK,
+	},
+	{
+		.code = (BPF_ALU | BPF_RSH | BPF_X),
+		.dst_reg = EBPF_REG_2,
 		.src_reg = EBPF_REG_4,
 	},
 	{
@@ -590,7 +616,7 @@ static const struct ebpf_insn test_shift1_prog[] = {
 	{
 		.code = (BPF_ALU | BPF_AND | BPF_K),
 		.dst_reg = EBPF_REG_2,
-		.imm = sizeof(uint64_t) * CHAR_BIT - 1,
+		.imm = TEST_SHIFT64_MASK,
 	},
 	{
 		.code = (EBPF_ALU64 | EBPF_ARSH | BPF_X),
@@ -600,7 +626,7 @@ static const struct ebpf_insn test_shift1_prog[] = {
 	{
 		.code = (BPF_ALU | BPF_AND | BPF_K),
 		.dst_reg = EBPF_REG_2,
-		.imm = sizeof(uint32_t) * CHAR_BIT - 1,
+		.imm = TEST_SHIFT32_MASK,
 	},
 	{
 		.code = (BPF_ALU | BPF_LSH | BPF_X),
@@ -666,8 +692,10 @@ test_shift1_check(uint64_t rc, const void *arg)
 	dve.out[0].u64 = r2;
 	dve.out[1].u64 = r3;
 
-	r2 = (uint32_t)r2 >> r4;
+	r4 &= TEST_SHIFT64_MASK;
 	r3 <<= r4;
+	r4 &= TEST_SHIFT32_MASK;
+	r2 = (uint32_t)r2 >> r4;
 
 	dve.out[2].u64 = r2;
 	dve.out[3].u64 = r3;
@@ -676,9 +704,9 @@ test_shift1_check(uint64_t rc, const void *arg)
 	r3 = dvt->in[1].u64;
 	r4 = dvt->in[2].u32;
 
-	r2 &= sizeof(uint64_t) * CHAR_BIT - 1;
+	r2 &= TEST_SHIFT64_MASK;
 	r3 = (int64_t)r3 >> r2;
-	r2 &= sizeof(uint32_t) * CHAR_BIT - 1;
+	r2 &= TEST_SHIFT32_MASK;
 	r4 = (uint32_t)r4 << r2;
 
 	dve.out[4].u64 = r4;
@@ -1008,9 +1036,9 @@ test_jump2_prepare(void *arg)
 	 * Initialize ether header.
 	 */
 	rte_ether_addr_copy((struct rte_ether_addr *)dst_mac,
-			    &dn->eth_hdr.d_addr);
+			    &dn->eth_hdr.dst_addr);
 	rte_ether_addr_copy((struct rte_ether_addr *)src_mac,
-			    &dn->eth_hdr.s_addr);
+			    &dn->eth_hdr.src_addr);
 	dn->eth_hdr.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN);
 
 	/*
@@ -1553,32 +1581,32 @@ test_xadd1_check(uint64_t rc, const void *arg)
 	memset(&dfe, 0, sizeof(dfe));
 
 	rv = 1;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = -1;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = (int32_t)TEST_FILL_1;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = TEST_MUL_1;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = TEST_MUL_2;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = TEST_JCC_2;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	rv = TEST_JCC_3;
-	rte_atomic32_add((rte_atomic32_t *)&dfe.u32, rv);
-	rte_atomic64_add((rte_atomic64_t *)&dfe.u64, rv);
+	__atomic_fetch_add(&dfe.u32, rv, __ATOMIC_RELAXED);
+	__atomic_fetch_add(&dfe.u64, rv, __ATOMIC_RELAXED);
 
 	return cmp_res(__func__, 1, rc, &dfe, dft, sizeof(dfe));
 }
@@ -2391,7 +2419,7 @@ static const struct ebpf_insn test_call5_prog[] = {
 	},
 };
 
-/* String comparision impelementation, return 0 if equal else difference */
+/* String comparison implementation, return 0 if equal else difference */
 static uint32_t
 dummy_func5(const char *s1, const char *s2)
 {
@@ -2572,7 +2600,7 @@ dummy_mbuf_prep(struct rte_mbuf *mb, uint8_t buf[], uint32_t buf_len,
 	uint8_t *db;
 
 	mb->buf_addr = buf;
-	mb->buf_iova = (uintptr_t)buf;
+	rte_mbuf_iova_set(mb, (uintptr_t)buf);
 	mb->buf_len = buf_len;
 	rte_mbuf_refcnt_set(mb, 1);
 
@@ -2691,7 +2719,7 @@ test_ld_mbuf1_check(uint64_t rc, const void *arg)
 }
 
 /*
- * same as ld_mbuf1, but then trancate the mbuf by 1B,
+ * same as ld_mbuf1, but then truncate the mbuf by 1B,
  * so load of last 4B fail.
  */
 static void
@@ -3207,7 +3235,7 @@ run_test(const struct bpf_test *tst)
 			printf("%s@%d: check_result(%s) failed, "
 				"error: %d(%s);\n",
 				__func__, __LINE__, tst->name,
-				rv, strerror(ret));
+				rv, strerror(rv));
 		}
 	}
 
@@ -3232,4 +3260,217 @@ test_bpf(void)
 	return rc;
 }
 
+#endif /* !RTE_LIB_BPF */
+
 REGISTER_TEST_COMMAND(bpf_autotest, test_bpf);
+
+#ifndef RTE_HAS_LIBPCAP
+
+static int
+test_bpf_convert(void)
+{
+	printf("BPF convert RTE_HAS_LIBPCAP is undefined, skipping test\n");
+	return TEST_SKIPPED;
+}
+
+#else
+#include <pcap/pcap.h>
+
+static void
+test_bpf_dump(struct bpf_program *cbf, const struct rte_bpf_prm *prm)
+{
+	printf("cBPF program (%u insns)\n", cbf->bf_len);
+	bpf_dump(cbf, 1);
+
+	if (prm != NULL) {
+		printf("\neBPF program (%u insns)\n", prm->nb_ins);
+		rte_bpf_dump(stdout, prm->ins, prm->nb_ins);
+	}
+}
+
+static int
+test_bpf_match(pcap_t *pcap, const char *str,
+	       struct rte_mbuf *mb)
+{
+	struct bpf_program fcode;
+	struct rte_bpf_prm *prm = NULL;
+	struct rte_bpf *bpf = NULL;
+	int ret = -1;
+	uint64_t rc;
+
+	if (pcap_compile(pcap, &fcode, str, 1, PCAP_NETMASK_UNKNOWN)) {
+		printf("%s@%d: pcap_compile(\"%s\") failed: %s;\n",
+		       __func__, __LINE__,  str, pcap_geterr(pcap));
+		return -1;
+	}
+
+	prm = rte_bpf_convert(&fcode);
+	if (prm == NULL) {
+		printf("%s@%d: bpf_convert('%s') failed,, error=%d(%s);\n",
+		       __func__, __LINE__, str, rte_errno, strerror(rte_errno));
+		goto error;
+	}
+
+	bpf = rte_bpf_load(prm);
+	if (bpf == NULL) {
+		printf("%s@%d: failed to load bpf code, error=%d(%s);\n",
+			__func__, __LINE__, rte_errno, strerror(rte_errno));
+		goto error;
+	}
+
+	rc = rte_bpf_exec(bpf, mb);
+	/* The return code from bpf capture filter is non-zero if matched */
+	ret = (rc == 0);
+error:
+	if (bpf)
+		rte_bpf_destroy(bpf);
+	rte_free(prm);
+	pcap_freecode(&fcode);
+	return ret;
+}
+
+/* Basic sanity test can we match a IP packet */
+static int
+test_bpf_filter_sanity(pcap_t *pcap)
+{
+	const uint32_t plen = 100;
+	struct rte_mbuf mb, *m;
+	uint8_t tbuf[RTE_MBUF_DEFAULT_BUF_SIZE];
+	struct {
+		struct rte_ether_hdr eth_hdr;
+		struct rte_ipv4_hdr ip_hdr;
+	} *hdr;
+
+	dummy_mbuf_prep(&mb, tbuf, sizeof(tbuf), plen);
+	m = &mb;
+
+	hdr = rte_pktmbuf_mtod(m, typeof(hdr));
+	hdr->eth_hdr = (struct rte_ether_hdr) {
+		.dst_addr.addr_bytes = "\xff\xff\xff\xff\xff\xff",
+		.ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4),
+	};
+	hdr->ip_hdr = (struct rte_ipv4_hdr) {
+		.version_ihl = RTE_IPV4_VHL_DEF,
+		.total_length = rte_cpu_to_be_16(plen),
+		.time_to_live = IPDEFTTL,
+		.next_proto_id = IPPROTO_RAW,
+		.src_addr = rte_cpu_to_be_32(RTE_IPV4_LOOPBACK),
+		.dst_addr = rte_cpu_to_be_32(RTE_IPV4_BROADCAST),
+	};
+
+	if (test_bpf_match(pcap, "ip", m) != 0) {
+		printf("%s@%d: filter \"ip\" doesn't match test data\n",
+		       __func__, __LINE__);
+		return -1;
+	}
+	if (test_bpf_match(pcap, "not ip", m) == 0) {
+		printf("%s@%d: filter \"not ip\" does match test data\n",
+		       __func__, __LINE__);
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
+ * Some sample pcap filter strings from
+ * https://wiki.wireshark.org/CaptureFilters
+ */
+static const char * const sample_filters[] = {
+	"host 172.18.5.4",
+	"net 192.168.0.0/24",
+	"src net 192.168.0.0/24",
+	"src net 192.168.0.0 mask 255.255.255.0",
+	"dst net 192.168.0.0/24",
+	"dst net 192.168.0.0 mask 255.255.255.0",
+	"port 53",
+	"host 192.0.2.1 and not (port 80 or port 25)",
+	"host 2001:4b98:db0::8 and not port 80 and not port 25",
+	"port not 53 and not arp",
+	"(tcp[0:2] > 1500 and tcp[0:2] < 1550) or (tcp[2:2] > 1500 and tcp[2:2] < 1550)",
+	"ether proto 0x888e",
+	"ether[0] & 1 = 0 and ip[16] >= 224",
+	"icmp[icmptype] != icmp-echo and icmp[icmptype] != icmp-echoreply",
+	"tcp[tcpflags] & (tcp-syn|tcp-fin) != 0 and not src and dst net 127.0.0.1",
+	"not ether dst 01:80:c2:00:00:0e",
+	"not broadcast and not multicast",
+	"dst host ff02::1",
+	"port 80 and tcp[((tcp[12:1] & 0xf0) >> 2):4] = 0x47455420",
+	/* Worms */
+	"dst port 135 and tcp port 135 and ip[2:2]==48",
+	"icmp[icmptype]==icmp-echo and ip[2:2]==92 and icmp[8:4]==0xAAAAAAAA",
+	"dst port 135 or dst port 445 or dst port 1433"
+	" and tcp[tcpflags] & (tcp-syn) != 0"
+	" and tcp[tcpflags] & (tcp-ack) = 0 and src net 192.168.0.0/24",
+	"tcp src port 443 and (tcp[((tcp[12] & 0xF0) >> 4 ) * 4] = 0x18)"
+	" and (tcp[((tcp[12] & 0xF0) >> 4 ) * 4 + 1] = 0x03)"
+	" and (tcp[((tcp[12] & 0xF0) >> 4 ) * 4 + 2] < 0x04)"
+	" and ((ip[2:2] - 4 * (ip[0] & 0x0F) - 4 * ((tcp[12] & 0xF0) >> 4) > 69))",
+	/* Other */
+	"len = 128",
+};
+
+static int
+test_bpf_filter(pcap_t *pcap, const char *s)
+{
+	struct bpf_program fcode;
+	struct rte_bpf_prm *prm = NULL;
+	struct rte_bpf *bpf = NULL;
+
+	if (pcap_compile(pcap, &fcode, s, 1, PCAP_NETMASK_UNKNOWN)) {
+		printf("%s@%d: pcap_compile('%s') failed: %s;\n",
+		       __func__, __LINE__, s, pcap_geterr(pcap));
+		return -1;
+	}
+
+	prm = rte_bpf_convert(&fcode);
+	if (prm == NULL) {
+		printf("%s@%d: bpf_convert('%s') failed,, error=%d(%s);\n",
+		       __func__, __LINE__, s, rte_errno, strerror(rte_errno));
+		goto error;
+	}
+
+	bpf = rte_bpf_load(prm);
+	if (bpf == NULL) {
+		printf("%s@%d: failed to load bpf code, error=%d(%s);\n",
+			__func__, __LINE__, rte_errno, strerror(rte_errno));
+		goto error;
+	}
+
+error:
+	if (bpf)
+		rte_bpf_destroy(bpf);
+	else {
+		printf("%s \"%s\"\n", __func__, s);
+		test_bpf_dump(&fcode, prm);
+	}
+
+	rte_free(prm);
+	pcap_freecode(&fcode);
+	return (bpf == NULL) ? -1 : 0;
+}
+
+static int
+test_bpf_convert(void)
+{
+	unsigned int i;
+	pcap_t *pcap;
+	int rc;
+
+	pcap = pcap_open_dead(DLT_EN10MB, 262144);
+	if (!pcap) {
+		printf("pcap_open_dead failed\n");
+		return -1;
+	}
+
+	rc = test_bpf_filter_sanity(pcap);
+	for (i = 0; i < RTE_DIM(sample_filters); i++)
+		rc |= test_bpf_filter(pcap, sample_filters[i]);
+
+	pcap_close(pcap);
+	return rc;
+}
+
+#endif /* RTE_HAS_LIBPCAP */
+
+REGISTER_TEST_COMMAND(bpf_convert_autotest, test_bpf_convert);

@@ -70,7 +70,7 @@ in :ref:`t5-nics` and :ref:`t6-nics`.
 Prerequisites
 -------------
 
-- Requires firmware version **1.25.4.0** and higher. Visit
+- Requires firmware version **1.25.6.0** and higher. Visit
   `Chelsio Download Center <http://service.chelsio.com>`_ to get latest firmware
   bundled with the latest Chelsio Unified Wire package.
 
@@ -404,7 +404,7 @@ Unified Wire package for Linux operating system are as follows:
 
    .. code-block:: console
 
-      firmware-version: 1.25.4.0, TP 0.1.23.2
+      firmware-version: 1.25.6.0, TP 0.1.23.2
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -462,7 +462,7 @@ devices managed by librte_net_cxgbe in Linux operating system.
       EAL:   PCI memory mapped at 0x7fd7c0200000
       EAL:   PCI memory mapped at 0x7fd77cdfd000
       EAL:   PCI memory mapped at 0x7fd7c10b7000
-      PMD: rte_cxgbe_pmd: fw: 1.25.4.0, TP: 0.1.23.2
+      PMD: rte_cxgbe_pmd: fw: 1.25.6.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -568,7 +568,7 @@ virtual functions.
       [...]
       EAL: PCI device 0000:02:01.0 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.25.4.0
+      PMD: rte_cxgbe_pmd: Firmware version: 1.25.6.0
       PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
@@ -576,7 +576,7 @@ virtual functions.
       PMD: rte_cxgbe_pmd:  0000:02:01.0 Chelsio rev 0 1G/10GBASE-SFP
       EAL: PCI device 0000:02:01.1 on NUMA socket 0
       EAL:   probe driver: 1425:5803 net_cxgbevf
-      PMD: rte_cxgbe_pmd: Firmware version: 1.25.4.0
+      PMD: rte_cxgbe_pmd: Firmware version: 1.25.6.0
       PMD: rte_cxgbe_pmd: TP Microcode version: 0.1.23.2
       PMD: rte_cxgbe_pmd: Chelsio rev 0
       PMD: rte_cxgbe_pmd: No bootstrap loaded
@@ -654,7 +654,7 @@ Unified Wire package for FreeBSD operating system are as follows:
 
    .. code-block:: console
 
-      dev.t5nex.0.firmware_version: 1.25.4.0
+      dev.t5nex.0.firmware_version: 1.25.6.0
 
 Running testpmd
 ~~~~~~~~~~~~~~~
@@ -772,7 +772,7 @@ devices managed by librte_net_cxgbe in FreeBSD operating system.
       EAL:   PCI memory mapped at 0x8007ec000
       EAL:   PCI memory mapped at 0x842800000
       EAL:   PCI memory mapped at 0x80086c000
-      PMD: rte_cxgbe_pmd: fw: 1.25.4.0, TP: 0.1.23.2
+      PMD: rte_cxgbe_pmd: fw: 1.25.6.0, TP: 0.1.23.2
       PMD: rte_cxgbe_pmd: Coming up as MASTER: Initializing adapter
       Interactive-mode selected
       Configuring Port 0 (socket 0)
@@ -838,3 +838,51 @@ to configure the mtu of all the ports with a single command.
 
      testpmd> port stop all
      testpmd> port config all max-pkt-len 9000
+
+Hardware Configuration and Debugging
+------------------------------------
+
+Firmware Configuration File
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+To enable or disable Chelsio NIC features before firmware initialization,
+the Chelsio firmware configuration file can be placed in following
+directory.
+
+.. code-block:: console
+
+   # For Chelsio T5 NIC series
+   cp <path_to_config_file>/t5-config.txt /lib/firmware/cxgb4/t5-config.txt
+
+   # For Chelsio T6 NIC series
+   cp <path_to_config_file>/t6-config.txt /lib/firmware/cxgb4/t6-config.txt
+
+The firmware configuration file is mainly intended to be used to debug
+firmware initialization failures. It can also be used to redistribute
+NIC resources from disabled physical functions (PFs) to main PF before
+initializing firmware.
+
+The CXGBE PMD will search and pick up the firmware configuration file
+during the Chelsio NIC probe, in following order.
+
+#. If the firmware configuration file is present in /lib/firmware/cxgb4/
+   directory, then this file is downloaded to temporary location in
+   NIC's on-chip RAM. When firmware is initializing, it picks up the
+   file from the temporary on-chip RAM location.
+
+#. Otherwise, if the firmware configuration file has been written
+   onto the NIC persistent flash area using cxgbtool, then this
+   file is picked up from the persistent flash area during
+   firmware initialization.
+
+#. If no firmware configuration file is found at /lib/firmware/cxgb4/
+   directory or on the NIC persistent flash area, then the firmware
+   will initialize with the default configuration file embedded inside
+   the firmware binary.
+
+.. warning::
+
+   Note that the Chelsio firmware configuration file contains very low
+   level details that is specific to the Chelsio NIC. Hence, the
+   firmware configuration file must not be modified without expert
+   guidance from Chelsio support team.

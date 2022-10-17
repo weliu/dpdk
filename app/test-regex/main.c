@@ -25,6 +25,7 @@
 #define MBUF_CACHE_SIZE 256
 #define MBUF_SIZE (1 << 8)
 #define START_BURST_SIZE 32u
+#define MAX_MATCH_MODE 2
 
 enum app_args {
 	ARG_HELP,
@@ -35,6 +36,8 @@ enum app_args {
 	ARG_NUM_OF_ITERATIONS,
 	ARG_NUM_OF_QPS,
 	ARG_NUM_OF_LCORES,
+	ARG_NUM_OF_MBUF_SEGS,
+	ARG_NUM_OF_MATCH_MODE,
 };
 
 struct job_ctx {
@@ -70,6 +73,8 @@ struct regex_conf {
 	char *data_buf;
 	long data_len;
 	long job_len;
+	uint32_t nb_segs;
+	uint32_t match_mode;
 };
 
 static void
@@ -82,14 +87,18 @@ usage(const char *prog_name)
 		" --perf N: only outputs the performance data\n"
 		" --nb_iter N: number of iteration to run\n"
 		" --nb_qps N: number of queues to use\n"
-		" --nb_lcores N: number of lcores to use\n",
+		" --nb_lcores N: number of lcores to use\n"
+		" --nb_segs N: number of mbuf segments\n"
+		" --match_mode N: match mode: 0 - None (default),"
+		"   1 - Highest Priority, 2 - Stop On Any\n",
 		prog_name);
 }
 
 static void
 args_parse(int argc, char **argv, char *rules_file, char *data_file,
 	   uint32_t *nb_jobs, bool *perf_mode, uint32_t *nb_iterations,
-	   uint32_t *nb_qps, uint32_t *nb_lcores)
+	   uint32_t *nb_qps, uint32_t *nb_lcores, uint32_t *nb_segs,
+	   uint32_t *match_mode)
 {
 	char **argvopt;
 	int opt;
@@ -111,6 +120,10 @@ args_parse(int argc, char **argv, char *rules_file, char *data_file,
 		{ "nb_qps", 1, 0, ARG_NUM_OF_QPS},
 		/* Number of lcores. */
 		{ "nb_lcores", 1, 0, ARG_NUM_OF_LCORES},
+		/* Number of mbuf segments. */
+		{ "nb_segs", 1, 0, ARG_NUM_OF_MBUF_SEGS},
+		/* Match mode. */
+		{ "match_mode", 1, 0, ARG_NUM_OF_MATCH_MODE},
 		/* End of options */
 		{ 0, 0, 0, 0 }
 	};
@@ -150,13 +163,21 @@ args_parse(int argc, char **argv, char *rules_file, char *data_file,
 		case ARG_NUM_OF_LCORES:
 			*nb_lcores = atoi(optarg);
 			break;
+		case ARG_NUM_OF_MBUF_SEGS:
+			*nb_segs = atoi(optarg);
+			break;
+		case ARG_NUM_OF_MATCH_MODE:
+			*match_mode = atoi(optarg);
+			if (*match_mode > MAX_MATCH_MODE)
+				rte_exit(EXIT_FAILURE,
+					 "Invalid match mode value\n");
+			break;
 		case ARG_HELP:
-			usage("RegEx test app");
+			usage(argv[0]);
 			break;
 		default:
-			fprintf(stderr, "Invalid option: %s\n", argv[optind]);
-			usage("RegEx test app");
-			rte_exit(EXIT_FAILURE, "Invalid option\n");
+			usage(argv[0]);
+			rte_exit(EXIT_FAILURE, "Invalid option: %s\n", argv[optind]);
 			break;
 		}
 	}
@@ -203,8 +224,7 @@ error:
 	printf("Error, can't open file %s\n, err = %d", file, res);
 	if (fp)
 		fclose(fp);
-	if (*buf)
-		rte_free(*buf);
+	rte_free(*buf);
 	return -res;
 }
 
@@ -292,8 +312,7 @@ init_port(uint16_t *nb_max_payload, char *rules_file, uint8_t *nb_max_matches,
 	rte_free(rules);
 	return 0;
 error:
-	if (rules)
-		rte_free(rules);
+	rte_free(rules);
 	return res;
 }
 
@@ -302,11 +321,74 @@ extbuf_free_cb(void *addr __rte_unused, void *fcb_opaque __rte_unused)
 {
 }
 
+static inline struct rte_mbuf *
+regex_create_segmented_mbuf(struct rte_mempool *mbuf_pool, int pkt_len,
+		int nb_segs, void *buf) {
+
+	struct rte_mbuf *m = NULL, *mbuf = NULL;
+	uint8_t *dst;
+	char *src = buf;
+	int data_len = 0;
+	int i, size;
+	int t_len;
+
+	if (pkt_len < 1) {
+		printf("Packet size must be 1 or more (is %d)\n", pkt_len);
+		return NULL;
+	}
+
+	if (nb_segs < 1) {
+		printf("Number of segments must be 1 or more (is %d)\n",
+				nb_segs);
+		return NULL;
+	}
+
+	t_len = pkt_len >= nb_segs ? (pkt_len / nb_segs +
+				     !!(pkt_len % nb_segs)) : 1;
+	size = pkt_len;
+
+	/* Create chained mbuf_src and fill it with buf data */
+	for (i = 0; size > 0; i++) {
+
+		m = rte_pktmbuf_alloc(mbuf_pool);
+		if (i == 0)
+			mbuf = m;
+
+		if (m == NULL) {
+			printf("Cannot create segment for source mbuf");
+			goto fail;
+		}
+
+		data_len = size > t_len ? t_len : size;
+		memset(rte_pktmbuf_mtod(m, uint8_t *), 0,
+				rte_pktmbuf_tailroom(m));
+		memcpy(rte_pktmbuf_mtod(m, uint8_t *), src, data_len);
+		dst = (uint8_t *)rte_pktmbuf_append(m, data_len);
+		if (dst == NULL) {
+			printf("Cannot append %d bytes to the mbuf\n",
+					data_len);
+			goto fail;
+		}
+
+		if (mbuf != m)
+			rte_pktmbuf_chain(mbuf, m);
+		src += data_len;
+		size -= data_len;
+
+	}
+	return mbuf;
+
+fail:
+	rte_pktmbuf_free(mbuf);
+	return NULL;
+}
+
 static int
 run_regex(void *args)
 {
 	struct regex_conf *rgxc = args;
 	uint32_t nb_jobs = rgxc->nb_jobs;
+	uint32_t nb_segs = rgxc->nb_segs;
 	uint32_t nb_iterations = rgxc->nb_iterations;
 	uint8_t nb_max_matches = rgxc->nb_max_matches;
 	uint32_t nb_qps = rgxc->nb_qps;
@@ -314,13 +396,18 @@ run_regex(void *args)
 	char *data_buf = rgxc->data_buf;
 	long data_len = rgxc->data_len;
 	long job_len = rgxc->job_len;
-
+	uint32_t match_mode = rgxc->match_mode;
+	long remainder;
+	long act_job_len = 0;
+	bool last_job = false;
 	char *buf = NULL;
 	uint32_t actual_jobs = 0;
 	uint32_t i;
+	uint32_t job_id;
 	uint16_t qp_id;
 	uint16_t dev_id = 0;
 	uint8_t nb_matches;
+	uint16_t rsp_flags = 0;
 	struct rte_regexdev_match *match;
 	long pos;
 	unsigned long d_ind = 0;
@@ -338,8 +425,12 @@ run_regex(void *args)
 	snprintf(mbuf_pool,
 		 sizeof(mbuf_pool),
 		 "mbuf_pool_%2u", qp_id_base);
-	mbuf_mp = rte_pktmbuf_pool_create(mbuf_pool, nb_jobs * nb_qps, 0,
-			0, MBUF_SIZE, rte_socket_id());
+	mbuf_mp = rte_pktmbuf_pool_create(mbuf_pool,
+			rte_align32pow2(nb_jobs * nb_qps * nb_segs),
+			0, 0, (nb_segs == 1) ? MBUF_SIZE :
+			(rte_align32pow2(job_len + (data_len % nb_jobs)) /
+			 nb_segs + RTE_PKTMBUF_HEADROOM),
+			rte_socket_id());
 	if (mbuf_mp == NULL) {
 		printf("Error, can't create memory pool\n");
 		return -ENOMEM;
@@ -375,25 +466,6 @@ run_regex(void *args)
 			goto end;
 		}
 
-		/* Allocate the jobs and assign each job with an mbuf. */
-		for (i = 0; i < nb_jobs; i++) {
-			ops[i] = rte_malloc(NULL, sizeof(*ops[0]) +
-					nb_max_matches *
-					sizeof(struct rte_regexdev_match), 0);
-			if (!ops[i]) {
-				printf("Error, can't allocate "
-				       "memory for op.\n");
-				res = -ENOMEM;
-				goto end;
-			}
-			ops[i]->mbuf = rte_pktmbuf_alloc(mbuf_mp);
-			if (!ops[i]->mbuf) {
-				printf("Error, can't attach mbuf.\n");
-				res = -ENOMEM;
-				goto end;
-			}
-		}
-
 		if (clone_buf(data_buf, &buf, data_len)) {
 			printf("Error, can't clone buf.\n");
 			res = -EXIT_FAILURE;
@@ -403,15 +475,68 @@ run_regex(void *args)
 		/* Assign each mbuf with the data to handle. */
 		actual_jobs = 0;
 		pos = 0;
+		remainder = data_len % nb_jobs;
+
+		/* Allocate the jobs and assign each job with an mbuf. */
 		for (i = 0; (pos < data_len) && (i < nb_jobs) ; i++) {
-			long act_job_len = RTE_MIN(job_len, data_len - pos);
-			rte_pktmbuf_attach_extbuf(ops[i]->mbuf, &buf[pos], 0,
-					act_job_len, &shinfo);
+			act_job_len = RTE_MIN(job_len, data_len - pos);
+
+			if (i == (nb_jobs - 1)) {
+				last_job = true;
+				act_job_len += remainder;
+			}
+
+			ops[i] = rte_malloc(NULL, sizeof(*ops[0]) +
+					nb_max_matches *
+					sizeof(struct rte_regexdev_match), 0);
+			if (!ops[i]) {
+				printf("Error, can't allocate "
+				       "memory for op.\n");
+				res = -ENOMEM;
+				goto end;
+			}
+			if (nb_segs > 1) {
+				ops[i]->mbuf = regex_create_segmented_mbuf
+							(mbuf_mp, act_job_len,
+							 nb_segs, &buf[pos]);
+			} else {
+				ops[i]->mbuf = rte_pktmbuf_alloc(mbuf_mp);
+				if (ops[i]->mbuf) {
+					rte_pktmbuf_attach_extbuf(ops[i]->mbuf,
+					&buf[pos], 0, act_job_len, &shinfo);
+
+					if (!last_job)
+						ops[i]->mbuf->data_len = job_len;
+					else
+						ops[i]->mbuf->data_len = act_job_len;
+
+					ops[i]->mbuf->pkt_len = act_job_len;
+				}
+			}
+			if (!ops[i]->mbuf) {
+				printf("Error, can't add mbuf.\n");
+				res = -ENOMEM;
+				goto end;
+			}
+
 			jobs_ctx[i].mbuf = ops[i]->mbuf;
-			ops[i]->mbuf->data_len = job_len;
-			ops[i]->mbuf->pkt_len = act_job_len;
 			ops[i]->user_id = i;
 			ops[i]->group_id0 = 1;
+			switch (match_mode) {
+			case 0:
+				/* Nothing to set in req_flags */
+				break;
+			case 1:
+				ops[i]->req_flags |= RTE_REGEX_OPS_REQ_MATCH_HIGH_PRIORITY_F;
+				break;
+			case 2:
+				ops[i]->req_flags |= RTE_REGEX_OPS_REQ_STOP_ON_MATCH_F;
+				break;
+			default:
+				rte_exit(EXIT_FAILURE,
+					 "Invalid match mode value\n");
+				break;
+			}
 			pos += act_job_len;
 			actual_jobs++;
 		}
@@ -427,6 +552,9 @@ run_regex(void *args)
 			qp = &qps[qp_id];
 			qp->total_enqueue = 0;
 			qp->total_dequeue = 0;
+			/* Re-set user id after dequeue to match data in mbuf. */
+			for (job_id = 0 ; job_id < nb_jobs; job_id++)
+				qp->ops[job_id]->user_id = job_id;
 		}
 		do {
 			update = false;
@@ -472,10 +600,10 @@ run_regex(void *args)
 	for (qp_id = 0; qp_id < nb_qps; qp_id++) {
 		qp = &qps[qp_id];
 		time = (long double)qp->cycles / rte_get_timer_hz();
-		printf("Core=%u QP=%u Job=%ld Bytes Time=%Lf sec Perf=%Lf "
+		printf("Core=%u QP=%u Job=%ld Bytes Last Job=%ld Bytes Time=%Lf sec Perf=%Lf "
 		       "Gbps\n", rte_lcore_id(), qp_id + qp_id_base,
-		       job_len, time,
-		       (((double)actual_jobs * job_len * nb_iterations * 8)
+		       job_len, act_job_len, time,
+		       (((double)data_len * nb_iterations * 8)
 		       / time) / 1000000000.0);
 	}
 
@@ -488,8 +616,9 @@ run_regex(void *args)
 		/* Log results per job. */
 		for (d_ind = 0; d_ind < qp->total_dequeue; d_ind++) {
 			nb_matches = qp->ops[d_ind % actual_jobs]->nb_matches;
-			printf("Job id %"PRIu64" number of matches = %d\n",
-					qp->ops[d_ind]->user_id, nb_matches);
+			rsp_flags = qp->ops[d_ind % actual_jobs]->rsp_flags;
+			printf("Job id %"PRIu64" number of matches = %d, rsp flags = 0x%x\n",
+					qp->ops[d_ind]->user_id, nb_matches, rsp_flags);
 			qp->total_matches += nb_matches;
 			match = qp->ops[d_ind % actual_jobs]->matches;
 			for (i = 0; i < nb_matches; i++) {
@@ -508,10 +637,10 @@ run_regex(void *args)
 			qp->total_matches += nb_matches;
 			match = qp->ops[d_ind % actual_jobs]->matches;
 			for (i = 0; i < nb_matches; i++) {
-				printf("start = %ld, len = %d, rule = %d\n",
-						match->start_offset +
-						d_ind * job_len,
-						match->len, match->rule_id);
+				printf("start = %d, len = %d, rule = %d\n",
+					match->start_offset +
+					(int)(qp->ops[d_ind % actual_jobs]->user_id * job_len),
+					match->len, match->rule_id);
 				match++;
 			}
 		}
@@ -530,8 +659,7 @@ end:
 		rte_free(qp->buf);
 		qp->buf = NULL;
 	}
-	if (mbuf_mp)
-		rte_mempool_free(mbuf_mp);
+	rte_mempool_free(mbuf_mp);
 	rte_free(qps);
 	return res;
 }
@@ -612,7 +740,8 @@ main(int argc, char **argv)
 	char *data_buf;
 	long data_len;
 	long job_len;
-	uint32_t nb_lcores = 1;
+	uint32_t nb_lcores = 1, nb_segs = 1;
+	uint32_t match_mode = 0;
 	struct regex_conf *rgxc;
 	uint32_t i;
 	struct qps_per_lcore *qps_per_lcore;
@@ -626,12 +755,14 @@ main(int argc, char **argv)
 	if (argc > 1)
 		args_parse(argc, argv, rules_file, data_file, &nb_jobs,
 				&perf_mode, &nb_iterations, &nb_qps,
-				&nb_lcores);
+				&nb_lcores, &nb_segs, &match_mode);
 
 	if (nb_qps == 0)
 		rte_exit(EXIT_FAILURE, "Number of QPs must be greater than 0\n");
 	if (nb_lcores == 0)
 		rte_exit(EXIT_FAILURE, "Number of lcores must be greater than 0\n");
+	if (nb_jobs == 0)
+		rte_exit(EXIT_FAILURE, "Number of jobs must be greater than 0\n");
 	if (distribute_qps_to_lcores(nb_lcores, nb_qps, &qps_per_lcore) < 0)
 		rte_exit(EXIT_FAILURE, "Failed to distribute queues to lcores!\n");
 	ret = init_port(&nb_max_payload, rules_file,
@@ -656,6 +787,7 @@ main(int argc, char **argv)
 	for (i = 0; i < nb_lcores; i++) {
 		rgxc[i] = (struct regex_conf){
 			.nb_jobs = nb_jobs,
+			.nb_segs = nb_segs,
 			.perf_mode = perf_mode,
 			.nb_iterations = nb_iterations,
 			.nb_max_matches = nb_max_matches,
@@ -664,6 +796,7 @@ main(int argc, char **argv)
 			.data_buf = data_buf,
 			.data_len = data_len,
 			.job_len = job_len,
+			.match_mode = match_mode,
 		};
 		rte_eal_remote_launch(run_regex, &rgxc[i],
 				      qps_per_lcore[i].lcore_id);

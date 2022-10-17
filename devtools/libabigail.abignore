@@ -1,3 +1,7 @@
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Core suppression rules: DO NOT TOUCH ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
 [suppress_function]
         symbol_version = EXPERIMENTAL
 [suppress_variable]
@@ -12,11 +16,21 @@
 [suppress_variable]
         name_regexp = _pmd_info$
 
-; Explicit ignore for driver-only ABI
-[suppress_function]
-        name_regexp = rte_vdev_(|un)register
+; Ignore changes on soname for mlx glue internal drivers
+[suppress_file]
+        soname_regexp = ^librte_.*mlx.*glue\.
 
-; Ignore fields inserted in cacheline boundary of rte_cryptodev
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Experimental APIs exceptions ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+; Ignore changes to asymmetric crypto API which is experimental
 [suppress_type]
-        name = rte_cryptodev
-        has_data_member_inserted_between = {offset_after(attached), end}
+        name = rte_crypto_asym_op
+[suppress_type]
+        type_kind = enum
+        changed_enumerators = RTE_CRYPTO_ASYM_XFORM_ECPM, RTE_CRYPTO_ASYM_XFORM_TYPE_LIST_END
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+; Temporary exceptions till next major ABI version ;
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

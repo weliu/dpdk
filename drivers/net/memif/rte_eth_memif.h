@@ -68,7 +68,7 @@ struct memif_queue {
 	uint64_t n_pkts;			/**< number of rx/tx packets */
 	uint64_t n_bytes;			/**< number of rx/tx bytes */
 
-	struct rte_intr_handle intr_handle;	/**< interrupt handle */
+	struct rte_intr_handle *intr_handle;	/**< interrupt handle */
 
 	memif_log2_ring_size_t log2_ring_size;	/**< log2 of ring size */
 };
@@ -180,6 +180,10 @@ const char *memif_version(void);
 #define __NR_memfd_create 360
 #elif defined __i386__
 #define __NR_memfd_create 356
+#elif defined __riscv
+#define __NR_memfd_create 279
+#elif defined __loongarch__
+#define __NR_memfd_create 279
 #else
 #error "__NR_memfd_create unknown for this architecture"
 #endif

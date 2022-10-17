@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright 2017-2019 NXP
+ * Copyright 2017-2019,2021 NXP
  */
 
 /* System headers */
@@ -394,7 +394,7 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 		if (req_dist_set % 2 != 0) {
 			dist_field = 1U << loop;
 			switch (dist_field) {
-			case ETH_RSS_L2_PAYLOAD:
+			case RTE_ETH_RSS_L2_PAYLOAD:
 
 				if (l2_configured)
 					break;
@@ -404,9 +404,9 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 					= HEADER_TYPE_ETH;
 				break;
 
-			case ETH_RSS_IPV4:
-			case ETH_RSS_FRAG_IPV4:
-			case ETH_RSS_NONFRAG_IPV4_OTHER:
+			case RTE_ETH_RSS_IPV4:
+			case RTE_ETH_RSS_FRAG_IPV4:
+			case RTE_ETH_RSS_NONFRAG_IPV4_OTHER:
 
 				if (ipv4_configured)
 					break;
@@ -415,10 +415,10 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 					= HEADER_TYPE_IPV4;
 				break;
 
-			case ETH_RSS_IPV6:
-			case ETH_RSS_FRAG_IPV6:
-			case ETH_RSS_NONFRAG_IPV6_OTHER:
-			case ETH_RSS_IPV6_EX:
+			case RTE_ETH_RSS_IPV6:
+			case RTE_ETH_RSS_FRAG_IPV6:
+			case RTE_ETH_RSS_NONFRAG_IPV6_OTHER:
+			case RTE_ETH_RSS_IPV6_EX:
 
 				if (ipv6_configured)
 					break;
@@ -427,9 +427,9 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 					= HEADER_TYPE_IPV6;
 				break;
 
-			case ETH_RSS_NONFRAG_IPV4_TCP:
-			case ETH_RSS_NONFRAG_IPV6_TCP:
-			case ETH_RSS_IPV6_TCP_EX:
+			case RTE_ETH_RSS_NONFRAG_IPV4_TCP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_TCP:
+			case RTE_ETH_RSS_IPV6_TCP_EX:
 
 				if (tcp_configured)
 					break;
@@ -438,9 +438,9 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 					= HEADER_TYPE_TCP;
 				break;
 
-			case ETH_RSS_NONFRAG_IPV4_UDP:
-			case ETH_RSS_NONFRAG_IPV6_UDP:
-			case ETH_RSS_IPV6_UDP_EX:
+			case RTE_ETH_RSS_NONFRAG_IPV4_UDP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_UDP:
+			case RTE_ETH_RSS_IPV6_UDP_EX:
 
 				if (udp_configured)
 					break;
@@ -449,8 +449,8 @@ static void set_dist_units(ioc_fm_pcd_net_env_params_t *dist_units,
 					= HEADER_TYPE_UDP;
 				break;
 
-			case ETH_RSS_NONFRAG_IPV4_SCTP:
-			case ETH_RSS_NONFRAG_IPV6_SCTP:
+			case RTE_ETH_RSS_NONFRAG_IPV4_SCTP:
+			case RTE_ETH_RSS_NONFRAG_IPV6_SCTP:
 
 				if (sctp_configured)
 					break;
@@ -939,7 +939,7 @@ int dpaa_fm_term(void)
 
 static int dpaa_port_vsp_configure(struct dpaa_if *dpaa_intf,
 		uint8_t vsp_id, t_handle fman_handle,
-		struct fman_if *fif)
+		struct fman_if *fif, u32 mbuf_data_room_size)
 {
 	t_fm_vsp_params vsp_params;
 	t_fm_buffer_prefix_content buf_prefix_cont;
@@ -976,10 +976,8 @@ static int dpaa_port_vsp_configure(struct dpaa_if *dpaa_intf,
 		return -1;
 	}
 	vsp_params.ext_buf_pools.num_of_pools_used = 1;
-	vsp_params.ext_buf_pools.ext_buf_pool[0].id =
-		dpaa_intf->vsp_bpid[vsp_id];
-	vsp_params.ext_buf_pools.ext_buf_pool[0].size =
-		RTE_MBUF_DEFAULT_BUF_SIZE;
+	vsp_params.ext_buf_pools.ext_buf_pool[0].id = dpaa_intf->vsp_bpid[vsp_id];
+	vsp_params.ext_buf_pools.ext_buf_pool[0].size = mbuf_data_room_size;
 
 	dpaa_intf->vsp_handle[vsp_id] = fm_vsp_config(&vsp_params);
 	if (!dpaa_intf->vsp_handle[vsp_id]) {
@@ -999,6 +997,9 @@ static int dpaa_port_vsp_configure(struct dpaa_if *dpaa_intf,
 	buf_prefix_cont.pass_time_stamp = true;
 	buf_prefix_cont.pass_hash_result = false;
 	buf_prefix_cont.pass_all_other_pcdinfo = false;
+	buf_prefix_cont.manip_ext_space =
+		RTE_PKTMBUF_HEADROOM - DPAA_MBUF_HW_ANNOTATION;
+
 	ret = fm_vsp_config_buffer_prefix_content(dpaa_intf->vsp_handle[vsp_id],
 					       &buf_prefix_cont);
 	if (ret != E_OK) {
@@ -1020,7 +1021,7 @@ static int dpaa_port_vsp_configure(struct dpaa_if *dpaa_intf,
 
 int dpaa_port_vsp_update(struct dpaa_if *dpaa_intf,
 		bool fmc_mode, uint8_t vsp_id, uint32_t bpid,
-		struct fman_if *fif)
+		struct fman_if *fif, u32 mbuf_data_room_size)
 {
 	int ret = 0;
 	t_handle fman_handle;
@@ -1051,7 +1052,8 @@ int dpaa_port_vsp_update(struct dpaa_if *dpaa_intf,
 
 	dpaa_intf->vsp_bpid[vsp_id] = bpid;
 
-	return dpaa_port_vsp_configure(dpaa_intf, vsp_id, fman_handle, fif);
+	return dpaa_port_vsp_configure(dpaa_intf, vsp_id, fman_handle, fif,
+				       mbuf_data_room_size);
 }
 
 int dpaa_port_vsp_cleanup(struct dpaa_if *dpaa_intf, struct fman_if *fif)

@@ -1,10 +1,15 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright 2020 Mellanox Technologies, Ltd
  */
+
+#include <sys/queue.h>
+
 #include <rte_windows.h>
 #include <rte_errno.h>
 #include <rte_log.h>
 #include <rte_eal.h>
+#include <rte_memory.h>
+#include <rte_bus_pci.h>
 
 #include "private.h"
 #include "pci_netuio.h"
@@ -236,6 +241,7 @@ get_device_resource_info(HDEVINFO dev_info,
 	}
 
 	/* Get NUMA node using DEVPKEY_Device_Numa_Node */
+	dev->device.numa_node = SOCKET_ID_ANY;
 	res = SetupDiGetDevicePropertyW(dev_info, dev_info_data,
 		&DEVPKEY_Device_Numa_Node, &property_type,
 		(BYTE *)&numa_node, sizeof(numa_node), NULL, 0);
@@ -243,7 +249,6 @@ get_device_resource_info(HDEVINFO dev_info,
 		DWORD error = GetLastError();
 		if (error == ERROR_NOT_FOUND) {
 			/* On older CPUs, NUMA is not bound to PCIe locality. */
-			dev->device.numa_node = 0;
 			return ERROR_SUCCESS;
 		}
 		RTE_LOG_WIN32_ERR("SetupDiGetDevicePropertyW"
@@ -376,7 +381,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 	dev->id = pci_id;
 	dev->max_vfs = 0; /* TODO: get max_vfs */
 
-	pci_name_set(dev);
+	pci_common_set(dev);
 
 	set_kernel_driver_type(device_info_data, dev);
 
@@ -404,7 +409,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 				dev2->max_vfs = dev->max_vfs;
 				memmove(dev2->mem_resource, dev->mem_resource,
 					sizeof(dev->mem_resource));
-				free(dev);
+				pci_free(dev);
 			}
 			return 0;
 		}
@@ -413,8 +418,7 @@ pci_scan_one(HDEVINFO dev_info, PSP_DEVINFO_DATA device_info_data)
 
 	return 0;
 end:
-	if (dev)
-		free(dev);
+	pci_free(dev);
 	return ret;
 }
 

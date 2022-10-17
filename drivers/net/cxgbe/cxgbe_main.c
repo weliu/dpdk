@@ -4,6 +4,7 @@
  */
 
 #include <sys/queue.h>
+#include <sys/stat.h>
 #include <stdio.h>
 #include <errno.h>
 #include <stdint.h>
@@ -11,6 +12,7 @@
 #include <unistd.h>
 #include <stdarg.h>
 #include <inttypes.h>
+#include <fcntl.h>
 #include <netinet/in.h>
 
 #include <rte_byteorder.h>
@@ -20,7 +22,6 @@
 #include <rte_log.h>
 #include <rte_debug.h>
 #include <rte_pci.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_memory.h>
 #include <rte_tailq.h>
@@ -30,7 +31,7 @@
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_random.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_kvargs.h>
 
 #include "base/common.h"
@@ -417,13 +418,15 @@ void cxgbe_remove_tid(struct tid_info *t, unsigned int chan, unsigned int tid,
 
 	if (t->tid_tab[tid]) {
 		t->tid_tab[tid] = NULL;
-		rte_atomic32_dec(&t->conns_in_use);
+		__atomic_sub_fetch(&t->conns_in_use, 1, __ATOMIC_RELAXED);
 		if (t->hash_base && tid >= t->hash_base) {
 			if (family == FILTER_TYPE_IPV4)
-				rte_atomic32_dec(&t->hash_tids_in_use);
+				__atomic_sub_fetch(&t->hash_tids_in_use, 1,
+						   __ATOMIC_RELAXED);
 		} else {
 			if (family == FILTER_TYPE_IPV4)
-				rte_atomic32_dec(&t->tids_in_use);
+				__atomic_sub_fetch(&t->tids_in_use, 1,
+						   __ATOMIC_RELAXED);
 		}
 	}
 
@@ -445,13 +448,15 @@ void cxgbe_insert_tid(struct tid_info *t, void *data, unsigned int tid,
 	t->tid_tab[tid] = data;
 	if (t->hash_base && tid >= t->hash_base) {
 		if (family == FILTER_TYPE_IPV4)
-			rte_atomic32_inc(&t->hash_tids_in_use);
+			__atomic_add_fetch(&t->hash_tids_in_use, 1,
+					   __ATOMIC_RELAXED);
 	} else {
 		if (family == FILTER_TYPE_IPV4)
-			rte_atomic32_inc(&t->tids_in_use);
+			__atomic_add_fetch(&t->tids_in_use, 1,
+					   __ATOMIC_RELAXED);
 	}
 
-	rte_atomic32_inc(&t->conns_in_use);
+	__atomic_add_fetch(&t->conns_in_use, 1, __ATOMIC_RELAXED);
 }
 
 /**
@@ -460,8 +465,7 @@ void cxgbe_insert_tid(struct tid_info *t, void *data, unsigned int tid,
 static void tid_free(struct tid_info *t)
 {
 	if (t->tid_tab) {
-		if (t->ftid_bmap)
-			rte_bitmap_free(t->ftid_bmap);
+		rte_bitmap_free(t->ftid_bmap);
 
 		if (t->ftid_bmap_array)
 			t4_os_free(t->ftid_bmap_array);
@@ -504,10 +508,8 @@ static int tid_init(struct tid_info *t)
 
 	t->afree = NULL;
 	t->atids_in_use = 0;
-	rte_atomic32_init(&t->tids_in_use);
-	rte_atomic32_set(&t->tids_in_use, 0);
-	rte_atomic32_init(&t->conns_in_use);
-	rte_atomic32_set(&t->conns_in_use, 0);
+	t->tids_in_use = 0;
+	t->conns_in_use = 0;
 
 	/* Setup the free list for atid_tab and clear the stid bitmap. */
 	if (natids) {
@@ -623,8 +625,7 @@ int cxgbe_cfg_queues(struct rte_eth_dev *eth_dev)
 			struct sge_eth_txq *t = &s->ethtxq[i];
 
 			init_rspq(adap, &r->rspq, 5, 32, 1024, 64);
-			r->usembufs = 1;
-			r->fl.size = (r->usembufs ? 1024 : 72);
+			r->fl.size = 1024;
 
 			t->q.size = 1024;
 		}
@@ -1007,6 +1008,219 @@ static int configure_filter_mode_mask(struct adapter *adap)
 			     params, val);
 }
 
+#define CXGBE_FW_CONFIG_PATH_T5 "/lib/firmware/cxgb4/t5-config.txt"
+#define CXGBE_FW_CONFIG_PATH_T6 "/lib/firmware/cxgb4/t6-config.txt"
+
+/*
+ * Load firmware configuration from file in /lib/firmware/cxgb4/ path,
+ * if it is present.
+ */
+static int cxgbe_load_fw_config_from_filesystem(struct adapter *adap,
+						const char **config_name,
+						u32 *mem_type, u32 *mem_addr)
+{
+	u32 param, val, mtype, maddr;
+	const char *fw_cfg_path;
+	char *fw_cfg = NULL;
+	struct stat st;
+	int ret, fd;
+
+	switch (CHELSIO_CHIP_VERSION(adap->params.chip)) {
+	case CHELSIO_T5:
+		fw_cfg_path = CXGBE_FW_CONFIG_PATH_T5;
+		break;
+	case CHELSIO_T6:
+		fw_cfg_path = CXGBE_FW_CONFIG_PATH_T6;
+		break;
+	default:
+		return -ENOENT;
+	}
+
+	ret = open(fw_cfg_path, O_RDONLY);
+	if (ret < 0) {
+		dev_debug(adap, "Couldn't open FW config file\n");
+		return ret;
+	}
+
+	fd = ret;
+
+	ret = fstat(fd, &st);
+	if (ret < 0) {
+		dev_debug(adap, "Couldn't get FW config file size\n");
+		goto out_err;
+	}
+
+	if (st.st_size >= FLASH_CFG_MAX_SIZE) {
+		dev_debug(adap, "FW config file size >= max(%u)\n",
+			  FLASH_CFG_MAX_SIZE);
+		ret = -ENOMEM;
+		goto out_err;
+	}
+
+	fw_cfg = rte_zmalloc(NULL, st.st_size, 0);
+	if (fw_cfg == NULL) {
+		ret = -ENOMEM;
+		goto out_err;
+	}
+
+	if (read(fd, fw_cfg, st.st_size) != st.st_size) {
+		dev_debug(adap, "Couldn't read FW config file data\n");
+		ret = -EIO;
+		goto out_err;
+	}
+
+	close(fd);
+
+	/* Send it to FW to verify and update to new configuration */
+	param = V_FW_PARAMS_MNEM(FW_PARAMS_MNEM_DEV) |
+		V_FW_PARAMS_PARAM_X(FW_PARAMS_PARAM_DEV_CF);
+	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, &param, &val);
+	if (ret < 0) {
+		dev_debug(adap, "FW config param query failed: %d\n", ret);
+		goto out_free;
+	}
+
+	mtype = val >> 8;
+	maddr = (val & 0xff) << 16;
+
+	t4_os_lock(&adap->win0_lock);
+	ret = t4_memory_rw(adap, MEMWIN_NIC, mtype, maddr, st.st_size,
+			   fw_cfg, T4_MEMORY_WRITE);
+	t4_os_unlock(&adap->win0_lock);
+	if (ret < 0) {
+		dev_debug(adap, "FW config file update failed: %d\n", ret);
+		goto out_free;
+	}
+
+	rte_free(fw_cfg);
+
+	*mem_type = mtype;
+	*mem_addr = maddr;
+	*config_name = fw_cfg_path;
+	return 0;
+
+out_err:
+	close(fd);
+out_free:
+	rte_free(fw_cfg);
+	return ret;
+}
+
+static int cxgbe_load_fw_config(struct adapter *adap)
+{
+	struct fw_caps_config_cmd caps_cmd = { 0 };
+	u32 finiver, finicsum, cfcsum, param, val;
+	const char *config_name = NULL;
+	u32 mtype = 0, maddr = 0;
+	int ret;
+
+	ret = cxgbe_load_fw_config_from_filesystem(adap, &config_name,
+						   &mtype, &maddr);
+	if (ret < 0) {
+		config_name = "On Flash";
+
+		ret = t4_flash_cfg_addr(adap);
+		if (ret < 0) {
+			dev_warn(adap,
+				 "Finding address for FW config file in flash failed: %d\n",
+				 ret);
+			goto out_default_config;
+		}
+
+		mtype = FW_MEMTYPE_CF_FLASH;
+		maddr = ret;
+	}
+
+	/* Enable HASH filter region when support is available. */
+	val = 1;
+	param = CXGBE_FW_PARAM_DEV(HASHFILTER_WITH_OFLD);
+	t4_set_params(adap, adap->mbox, adap->pf, 0, 1, &param, &val);
+
+	/*
+	 * Issue a Capability Configuration command to the firmware to get it
+	 * to parse the Configuration File.
+	 */
+	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+					   F_FW_CMD_REQUEST | F_FW_CMD_READ);
+	caps_cmd.cfvalid_to_len16 =
+		cpu_to_be32(F_FW_CAPS_CONFIG_CMD_CFVALID |
+			    V_FW_CAPS_CONFIG_CMD_MEMTYPE_CF(mtype) |
+			    V_FW_CAPS_CONFIG_CMD_MEMADDR64K_CF(maddr >> 16) |
+			    FW_LEN16(caps_cmd));
+	ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+			 &caps_cmd);
+
+out_default_config:
+	/*
+	 * If the CAPS_CONFIG failed with an ENOENT (for a Firmware
+	 * Configuration File in filesystem or FLASH), our last gasp
+	 * effort is to use the Firmware Configuration File which is
+	 * embedded in the firmware.
+	 */
+	if (ret == -ENOENT) {
+		config_name = "Firmware Default";
+
+		memset(&caps_cmd, 0, sizeof(caps_cmd));
+		caps_cmd.op_to_write =
+			cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+				    F_FW_CMD_REQUEST | F_FW_CMD_READ);
+		caps_cmd.cfvalid_to_len16 = cpu_to_be32(FW_LEN16(caps_cmd));
+		ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+				 &caps_cmd);
+	}
+
+	if (ret < 0) {
+		dev_info(adap,
+			 "Failed to configure using %s Firmware Configuration file: %d\n",
+			 config_name, ret);
+		return ret;
+	}
+
+	finiver = be32_to_cpu(caps_cmd.finiver);
+	finicsum = be32_to_cpu(caps_cmd.finicsum);
+	cfcsum = be32_to_cpu(caps_cmd.cfcsum);
+	if (finicsum != cfcsum)
+		dev_warn(adap,
+			 "Configuration File checksum mismatch: [fini] csum=0x%x, computed csum=0x%x\n",
+			 finicsum, cfcsum);
+
+	/*
+	 * If we're a pure NIC driver then disable all offloading facilities.
+	 * This will allow the firmware to optimize aspects of the hardware
+	 * configuration which will result in improved performance.
+	 */
+	caps_cmd.niccaps &= cpu_to_be16(~FW_CAPS_CONFIG_NIC_ETHOFLD);
+	caps_cmd.toecaps = 0;
+	caps_cmd.iscsicaps = 0;
+	caps_cmd.rdmacaps = 0;
+	caps_cmd.fcoecaps = 0;
+	caps_cmd.cryptocaps = 0;
+
+	/*
+	 * And now tell the firmware to use the configuration we just loaded.
+	 */
+	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
+					   F_FW_CMD_REQUEST | F_FW_CMD_WRITE);
+	caps_cmd.cfvalid_to_len16 = htonl(FW_LEN16(caps_cmd));
+	ret = t4_wr_mbox(adap, adap->mbox, &caps_cmd, sizeof(caps_cmd),
+			 NULL);
+	if (ret < 0) {
+		dev_warn(adap, "Unable to finalize Firmware Capabilities %d\n",
+			 ret);
+		return ret;
+	}
+
+	/*
+	 * Return successfully and note that we're operating with parameters
+	 * not supplied by the driver, rather than from hard-wired
+	 * initialization constants buried in the driver.
+	 */
+	dev_info(adap,
+		 "Successfully configured using Firmware Configuration File \"%s\", version: 0x%x, computed csum: 0x%x\n",
+		 config_name, finiver, cfcsum);
+	return 0;
+}
+
 static void configure_pcie_ext_tag(struct adapter *adapter)
 {
 	u16 v;
@@ -1120,12 +1334,7 @@ static int adap_init0_tweaks(struct adapter *adapter)
  */
 static int adap_init0_config(struct adapter *adapter, int reset)
 {
-	u32 finiver, finicsum, cfcsum, param, val;
-	struct fw_caps_config_cmd caps_cmd;
-	unsigned long mtype = 0, maddr = 0;
-	u8 config_issued = 0;
-	char config_name[20];
-	int cfg_addr, ret;
+	int ret;
 
 	/*
 	 * Reset device if necessary.
@@ -1140,97 +1349,9 @@ static int adap_init0_config(struct adapter *adapter, int reset)
 		}
 	}
 
-	cfg_addr = t4_flash_cfg_addr(adapter);
-	if (cfg_addr < 0) {
-		ret = cfg_addr;
-		dev_warn(adapter, "Finding address for firmware config file in flash failed, error %d\n",
-			 -ret);
-		goto bye;
-	}
-
-	strcpy(config_name, "On Flash");
-	mtype = FW_MEMTYPE_CF_FLASH;
-	maddr = cfg_addr;
-
-	/* Enable HASH filter region when support is available. */
-	val = 1;
-	param = CXGBE_FW_PARAM_DEV(HASHFILTER_WITH_OFLD);
-	t4_set_params(adapter, adapter->mbox, adapter->pf, 0, 1,
-		      &param, &val);
-
-	/*
-	 * Issue a Capability Configuration command to the firmware to get it
-	 * to parse the Configuration File.  We don't use t4_fw_config_file()
-	 * because we want the ability to modify various features after we've
-	 * processed the configuration file ...
-	 */
-	memset(&caps_cmd, 0, sizeof(caps_cmd));
-	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-					   F_FW_CMD_REQUEST | F_FW_CMD_READ);
-	caps_cmd.cfvalid_to_len16 =
-		cpu_to_be32(F_FW_CAPS_CONFIG_CMD_CFVALID |
-			    V_FW_CAPS_CONFIG_CMD_MEMTYPE_CF(mtype) |
-			    V_FW_CAPS_CONFIG_CMD_MEMADDR64K_CF(maddr >> 16) |
-			    FW_LEN16(caps_cmd));
-	ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd, sizeof(caps_cmd),
-			 &caps_cmd);
-	/*
-	 * If the CAPS_CONFIG failed with an ENOENT (for a Firmware
-	 * Configuration File in FLASH), our last gasp effort is to use the
-	 * Firmware Configuration File which is embedded in the firmware.  A
-	 * very few early versions of the firmware didn't have one embedded
-	 * but we can ignore those.
-	 */
-	if (ret == -ENOENT) {
-		dev_info(adapter, "%s: Going for embedded config in firmware..\n",
-			 __func__);
-
-		memset(&caps_cmd, 0, sizeof(caps_cmd));
-		caps_cmd.op_to_write =
-			cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-				    F_FW_CMD_REQUEST | F_FW_CMD_READ);
-		caps_cmd.cfvalid_to_len16 = cpu_to_be32(FW_LEN16(caps_cmd));
-		ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd,
-				 sizeof(caps_cmd), &caps_cmd);
-		strcpy(config_name, "Firmware Default");
-	}
-
-	config_issued = 1;
+	ret = cxgbe_load_fw_config(adapter);
 	if (ret < 0)
 		goto bye;
-
-	finiver = be32_to_cpu(caps_cmd.finiver);
-	finicsum = be32_to_cpu(caps_cmd.finicsum);
-	cfcsum = be32_to_cpu(caps_cmd.cfcsum);
-	if (finicsum != cfcsum)
-		dev_warn(adapter, "Configuration File checksum mismatch: [fini] csum=%#x, computed csum=%#x\n",
-			 finicsum, cfcsum);
-
-	/*
-	 * If we're a pure NIC driver then disable all offloading facilities.
-	 * This will allow the firmware to optimize aspects of the hardware
-	 * configuration which will result in improved performance.
-	 */
-	caps_cmd.niccaps &= cpu_to_be16(~FW_CAPS_CONFIG_NIC_ETHOFLD);
-	caps_cmd.toecaps = 0;
-	caps_cmd.iscsicaps = 0;
-	caps_cmd.rdmacaps = 0;
-	caps_cmd.fcoecaps = 0;
-	caps_cmd.cryptocaps = 0;
-
-	/*
-	 * And now tell the firmware to use the configuration we just loaded.
-	 */
-	caps_cmd.op_to_write = cpu_to_be32(V_FW_CMD_OP(FW_CAPS_CONFIG_CMD) |
-					   F_FW_CMD_REQUEST | F_FW_CMD_WRITE);
-	caps_cmd.cfvalid_to_len16 = htonl(FW_LEN16(caps_cmd));
-	ret = t4_wr_mbox(adapter, adapter->mbox, &caps_cmd, sizeof(caps_cmd),
-			 NULL);
-	if (ret < 0) {
-		dev_warn(adapter, "Unable to finalize Firmware Capabilities %d\n",
-			 -ret);
-		goto bye;
-	}
 
 	/*
 	 * Tweak configuration based on system architecture, etc.
@@ -1252,27 +1373,9 @@ static int adap_init0_config(struct adapter *adapter, int reset)
 		goto bye;
 	}
 
-	/*
-	 * Return successfully and note that we're operating with parameters
-	 * not supplied by the driver, rather than from hard-wired
-	 * initialization constants buried in the driver.
-	 */
-	dev_info(adapter,
-		 "Successfully configured using Firmware Configuration File \"%s\", version %#x, computed checksum %#x\n",
-		 config_name, finiver, cfcsum);
-
 	return 0;
 
-	/*
-	 * Something bad happened.  Return the error ...  (If the "error"
-	 * is that there's no Configuration File on the adapter we don't
-	 * want to issue a warning since this is fairly common.)
-	 */
 bye:
-	if (config_issued && ret != -ENOENT)
-		dev_warn(adapter, "\"%s\" configuration file error %d\n",
-			 config_name, -ret);
-
 	dev_debug(adapter, "%s: returning ret = %d ..\n", __func__, ret);
 	return ret;
 }
@@ -1500,6 +1603,20 @@ static int adap_init0(struct adapter *adap)
 	ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 1, params, val);
 	adap->params.vi_enable_rx = (ret == 0 && val[0] != 0);
 
+	/* Read the RAW MPS entries. In T6, the last 2 TCAM entries
+	 * are reserved for RAW MAC addresses (rawf = 2, one per port).
+	 */
+	if (CHELSIO_CHIP_VERSION(adap->params.chip) > CHELSIO_T5) {
+		params[0] = CXGBE_FW_PARAM_PFVF(RAWF_START);
+		params[1] = CXGBE_FW_PARAM_PFVF(RAWF_END);
+		ret = t4_query_params(adap, adap->mbox, adap->pf, 0, 2,
+				      params, val);
+		if (ret == 0) {
+			adap->params.rawf_start = val[0];
+			adap->params.rawf_size = val[1] - val[0] + 1;
+		}
+	}
+
 	/*
 	 * The MTU/MSS Table is initialized by now, so load their values.  If
 	 * we're initializing the adapter, then we'll make any modifications
@@ -1646,8 +1763,7 @@ int cxgbe_link_start(struct port_info *pi)
 	unsigned int mtu;
 	int ret;
 
-	mtu = pi->eth_dev->data->dev_conf.rxmode.max_rx_pkt_len -
-	      (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN);
+	mtu = pi->eth_dev->data->mtu;
 
 	conf_offloads = pi->eth_dev->data->dev_conf.rxmode.offloads;
 
@@ -1656,7 +1772,7 @@ int cxgbe_link_start(struct port_info *pi)
 	 * that step explicitly.
 	 */
 	ret = t4_set_rxmode(adapter, adapter->mbox, pi->viid, mtu, -1, -1, -1,
-			    !!(conf_offloads & DEV_RX_OFFLOAD_VLAN_STRIP),
+			    !!(conf_offloads & RTE_ETH_RX_OFFLOAD_VLAN_STRIP),
 			    true);
 	if (ret == 0) {
 		ret = cxgbe_mpstcam_modify(pi, (int)pi->xact_addr_filt,
@@ -1680,7 +1796,7 @@ int cxgbe_link_start(struct port_info *pi)
 	}
 
 	if (ret == 0 && cxgbe_force_linkup(adapter))
-		pi->eth_dev->data->dev_link.link_status = ETH_LINK_UP;
+		pi->eth_dev->data->dev_link.link_status = RTE_ETH_LINK_UP;
 	return ret;
 }
 
@@ -1711,10 +1827,10 @@ int cxgbe_write_rss_conf(const struct port_info *pi, uint64_t rss_hf)
 	if (rss_hf & CXGBE_RSS_HF_IPV4_MASK)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4TWOTUPEN;
 
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_TCP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_TCP)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN;
 
-	if (rss_hf & ETH_RSS_NONFRAG_IPV4_UDP)
+	if (rss_hf & RTE_ETH_RSS_NONFRAG_IPV4_UDP)
 		flags |= F_FW_RSS_VI_CONFIG_CMD_IP4FOURTUPEN |
 			 F_FW_RSS_VI_CONFIG_CMD_UDPEN;
 
@@ -1851,7 +1967,7 @@ static void fw_caps_to_speed_caps(enum fw_port_type port_type,
 {
 #define SET_SPEED(__speed_name) \
 	do { \
-		*speed_caps |= ETH_LINK_ ## __speed_name; \
+		*speed_caps |= RTE_ETH_LINK_ ## __speed_name; \
 	} while (0)
 
 #define FW_CAPS_TO_SPEED(__fw_name) \
@@ -1938,7 +2054,7 @@ void cxgbe_get_speed_caps(struct port_info *pi, u32 *speed_caps)
 			      speed_caps);
 
 	if (!(pi->link_cfg.pcaps & FW_PORT_CAP32_ANEG))
-		*speed_caps |= ETH_LINK_SPEED_FIXED;
+		*speed_caps |= RTE_ETH_LINK_SPEED_FIXED;
 }
 
 /**

@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <sys/queue.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_malloc.h>
 #include <rte_flow.h>
 #include <rte_flow_driver.h>
@@ -240,11 +241,10 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 			return -rte_errno;
 		}
 		/* if the first item is MAC, the content should be NULL */
-		if ((item->spec || item->mask) &&
-			(memcmp(eth_spec, &eth_null,
-				sizeof(struct rte_flow_item_eth)) ||
-			 memcmp(eth_mask, &eth_null,
-				sizeof(struct rte_flow_item_eth)))) {
+		if ((item->spec && memcmp(eth_spec, &eth_null,
+					  sizeof(struct rte_flow_item_eth))) ||
+		    (item->mask && memcmp(eth_mask, &eth_null,
+					  sizeof(struct rte_flow_item_eth)))) {
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Not supported by ntuple filter");
@@ -272,11 +272,10 @@ cons_parse_ntuple_filter(const struct rte_flow_attr *attr,
 			return -rte_errno;
 		}
 		/* the content should be NULL */
-		if ((item->spec || item->mask) &&
-			(memcmp(vlan_spec, &vlan_null,
-				sizeof(struct rte_flow_item_vlan)) ||
-			 memcmp(vlan_mask, &vlan_null,
-				sizeof(struct rte_flow_item_vlan)))) {
+		if ((item->spec && memcmp(vlan_spec, &vlan_null,
+					  sizeof(struct rte_flow_item_vlan))) ||
+		    (item->mask && memcmp(vlan_mask, &vlan_null,
+					  sizeof(struct rte_flow_item_vlan)))) {
 			rte_flow_error_set(error, EINVAL,
 				RTE_FLOW_ERROR_TYPE_ITEM,
 				item, "Not supported by ntuple filter");
@@ -512,7 +511,7 @@ action:
 		memset(filter, 0, sizeof(struct rte_eth_ntuple_filter));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ACTION,
-			item, "Not supported action.");
+			act, "Not supported action.");
 		return -rte_errno;
 	}
 	filter->queue =
@@ -1216,7 +1215,7 @@ cons_parse_l2_tn_filter(struct rte_eth_dev *dev,
 		return -rte_errno;
 	}
 
-	filter->l2_tunnel_type = RTE_L2_TUNNEL_TYPE_E_TAG;
+	filter->l2_tunnel_type = RTE_ETH_L2_TUNNEL_TYPE_E_TAG;
 	/**
 	 * grp and e_cid_base are bit fields and only use 14 bits.
 	 * e-tag id is taken as little endian by HW.
@@ -1584,9 +1583,7 @@ txgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev __rte_unused,
 	 * value. So, we need not do anything for the not provided fields later.
 	 */
 	memset(rule, 0, sizeof(struct txgbe_fdir_rule));
-	memset(&rule->mask, 0xFF, sizeof(struct txgbe_hw_fdir_mask));
-	rule->mask.vlan_tci_mask = 0;
-	rule->mask.flex_bytes_mask = 0;
+	memset(&rule->mask, 0, sizeof(struct txgbe_hw_fdir_mask));
 
 	/**
 	 * The first not void item should be
@@ -1868,7 +1865,10 @@ txgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev __rte_unused,
 		 * as we must have a flow type.
 		 */
 		rule->input.flow_type |= TXGBE_ATR_L4TYPE_TCP;
-		ptype = txgbe_ptype_table[TXGBE_PT_IPV4_TCP];
+		if (rule->input.flow_type & TXGBE_ATR_FLOW_TYPE_IPV6)
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV6_TCP];
+		else
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV4_TCP];
 		/*Not supported last point for range*/
 		if (item->last) {
 			rte_flow_error_set(error, EINVAL,
@@ -1932,7 +1932,10 @@ txgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev __rte_unused,
 		 * as we must have a flow type.
 		 */
 		rule->input.flow_type |= TXGBE_ATR_L4TYPE_UDP;
-		ptype = txgbe_ptype_table[TXGBE_PT_IPV4_UDP];
+		if (rule->input.flow_type & TXGBE_ATR_FLOW_TYPE_IPV6)
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV6_UDP];
+		else
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV4_UDP];
 		/*Not supported last point for range*/
 		if (item->last) {
 			rte_flow_error_set(error, EINVAL,
@@ -1991,7 +1994,10 @@ txgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev __rte_unused,
 		 * as we must have a flow type.
 		 */
 		rule->input.flow_type |= TXGBE_ATR_L4TYPE_SCTP;
-		ptype = txgbe_ptype_table[TXGBE_PT_IPV4_SCTP];
+		if (rule->input.flow_type & TXGBE_ATR_FLOW_TYPE_IPV6)
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV6_SCTP];
+		else
+			ptype = txgbe_ptype_table[TXGBE_PT_IPV4_SCTP];
 		/*Not supported last point for range*/
 		if (item->last) {
 			rte_flow_error_set(error, EINVAL,
@@ -2141,6 +2147,16 @@ txgbe_parse_fdir_filter_normal(struct rte_eth_dev *dev __rte_unused,
 	}
 
 	rule->input.pkt_type = cpu_to_be16(txgbe_encode_ptype(ptype));
+
+	if (rule->input.flow_type & TXGBE_ATR_FLOW_TYPE_IPV6) {
+		if (rule->input.flow_type & TXGBE_ATR_L4TYPE_MASK)
+			rule->input.pkt_type &= 0xFFFF;
+		else
+			rule->input.pkt_type &= 0xF8FF;
+
+		rule->input.flow_type &= TXGBE_ATR_L3TYPE_MASK |
+					TXGBE_ATR_L4TYPE_MASK;
+	}
 
 	return txgbe_parse_fdir_act_attr(attr, actions, rule, error);
 }
@@ -2440,7 +2456,7 @@ txgbe_parse_fdir_filter(struct rte_eth_dev *dev,
 {
 	int ret;
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
-	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	struct rte_eth_fdir_conf *fdir_conf = TXGBE_DEV_FDIR_CONF(dev);
 
 	ret = txgbe_parse_fdir_filter_normal(dev, attr, pattern,
 					actions, rule, error);
@@ -2459,9 +2475,16 @@ step_next:
 		(rule->input.src_port != 0 || rule->input.dst_port != 0))
 		return -ENOTSUP;
 
-	if (fdir_mode == RTE_FDIR_MODE_NONE ||
-	    fdir_mode != rule->mode)
+	if (fdir_conf->mode == RTE_FDIR_MODE_NONE) {
+		fdir_conf->mode = rule->mode;
+		ret = txgbe_fdir_configure(dev);
+		if (ret) {
+			fdir_conf->mode = RTE_FDIR_MODE_NONE;
+			return ret;
+		}
+	} else if (fdir_conf->mode != rule->mode) {
 		return -ENOTSUP;
+	}
 
 	if (rule->queue >= dev->data->nb_rx_queues)
 		return -ENOTSUP;
@@ -2537,7 +2560,7 @@ txgbe_parse_rss_filter(struct rte_eth_dev *dev,
 	/* check if the next not void item is END */
 	act = next_no_void_action(actions, act);
 	if (act->type != RTE_FLOW_ACTION_TYPE_END) {
-		memset(rss_conf, 0, sizeof(struct rte_eth_rss_conf));
+		memset(rss_conf, 0, sizeof(struct txgbe_rte_flow_rss_conf));
 		rte_flow_error_set(error, EINVAL,
 			RTE_FLOW_ERROR_TYPE_ACTION,
 			act, "Not supported action.");
@@ -2828,8 +2851,10 @@ txgbe_flow_create(struct rte_eth_dev *dev,
 				ret = memcmp(&fdir_info->mask,
 					&fdir_rule.mask,
 					sizeof(struct txgbe_hw_fdir_mask));
-				if (ret)
+				if (ret) {
+					PMD_DRV_LOG(ERR, "only support one global mask");
 					goto out;
+				}
 
 				if (fdir_info->flex_bytes_offset !=
 						fdir_rule.flex_bytes_offset)
@@ -3151,4 +3176,3 @@ const struct rte_flow_ops txgbe_flow_ops = {
 	.destroy = txgbe_flow_destroy,
 	.flush = txgbe_flow_flush,
 };
-

@@ -14,18 +14,15 @@ extern "C" {
 /*
  * RX/TX function prototypes
  */
-void eth_igc_tx_queue_release(void *txq);
-void eth_igc_rx_queue_release(void *rxq);
+void eth_igc_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
+void eth_igc_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 void igc_dev_clear_queues(struct rte_eth_dev *dev);
 int eth_igc_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
 		const struct rte_eth_rxconf *rx_conf,
 		struct rte_mempool *mb_pool);
 
-uint32_t eth_igc_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
-
-int eth_igc_rx_descriptor_done(void *rx_queue, uint16_t offset);
+uint32_t eth_igc_rx_queue_count(void *rx_queue);
 
 int eth_igc_rx_descriptor_status(void *rx_queue, uint16_t offset);
 
@@ -52,6 +49,12 @@ void eth_igc_txq_info_get(struct rte_eth_dev *dev, uint16_t queue_id,
 	struct rte_eth_txq_info *qinfo);
 void eth_igc_vlan_strip_queue_set(struct rte_eth_dev *dev,
 			uint16_t rx_queue_id, int on);
+uint16_t igc_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+uint16_t igc_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts);
+uint16_t eth_igc_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+	uint16_t nb_pkts);
+uint16_t igc_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
+	uint16_t nb_pkts);
 #ifdef __cplusplus
 }
 #endif

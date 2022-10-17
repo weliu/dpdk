@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/queue.h>
@@ -19,7 +20,7 @@
 #include <rte_ethdev.h>
 #include <rte_cycles.h>
 #include <rte_eventdev.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 #include <rte_pause.h>
 
 #include "opdl_evdev.h"
@@ -864,7 +865,7 @@ qid_basic(struct test *t)
 	}
 
 
-	/* Start the devicea */
+	/* Start the device */
 	if (!err) {
 		if (rte_event_dev_start(evdev) < 0) {
 			PMD_DRV_LOG(ERR, "%s:%d: Error with start call\n",

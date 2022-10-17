@@ -27,10 +27,11 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_log.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_string_fns.h>
+#ifdef RTE_LIB_METRICS
 #include <rte_metrics.h>
+#endif
 #include <rte_cycles.h>
 #ifdef RTE_LIB_SECURITY
 #include <rte_security.h>
@@ -59,8 +60,10 @@ static uint32_t enable_collectd_format;
 static int stdout_fd;
 /**< Host id process is running on */
 static char host_id[MAX_LONG_OPT_SZ];
+#ifdef RTE_LIB_METRICS
 /**< Enable metrics. */
 static uint32_t enable_metrics;
+#endif
 /**< Enable stats reset. */
 static uint32_t reset_stats;
 /**< Enable xstats reset. */
@@ -81,6 +84,8 @@ static char bdr_str[MAX_STRING_LEN];
 
 /**< Enable show port. */
 static uint32_t enable_shw_port;
+/* Enable show port private info. */
+static uint32_t enable_shw_port_priv;
 /**< Enable show tm. */
 static uint32_t enable_shw_tm;
 /**< Enable show crypto. */
@@ -94,6 +99,9 @@ static char *mempool_name;
 /**< Enable iter mempool. */
 static uint32_t enable_iter_mempool;
 static char *mempool_iter_name;
+/**< Enable dump regs. */
+static uint32_t enable_dump_regs;
+static char *dump_regs_file_prefix;
 
 /**< display usage */
 static void
@@ -105,8 +113,10 @@ proc_info_usage(const char *prgname)
 		"  --stats: to display port statistics, enabled by default\n"
 		"  --xstats: to display extended port statistics, disabled by "
 			"default\n"
+#ifdef RTE_LIB_METRICS
 		"  --metrics: to display derived metrics of the ports, disabled by "
 			"default\n"
+#endif
 		"  --xstats-name NAME: to display single xstat id by NAME\n"
 		"  --xstats-ids IDLIST: to display xstat values by id. "
 			"The argument is comma-separated list of xstat ids to print out.\n"
@@ -115,11 +125,13 @@ proc_info_usage(const char *prgname)
 		"  --collectd-format: to print statistics to STDOUT in expected by collectd format\n"
 		"  --host-id STRING: host id used to identify the system process is running on\n"
 		"  --show-port: to display ports information\n"
+		"  --show-port-private: to display ports private information\n"
 		"  --show-tm: to display traffic manager information for ports\n"
 		"  --show-crypto: to display crypto information\n"
 		"  --show-ring[=name]: to display ring information\n"
 		"  --show-mempool[=name]: to display mempool information\n"
-		"  --iter-mempool=name: iterate mempool elements to display content\n",
+		"  --iter-mempool=name: iterate mempool elements to display content\n"
+		"  --dump-regs=file-prefix: dump registers to file with the file-prefix\n",
 		prgname);
 }
 
@@ -214,18 +226,22 @@ proc_info_parse_args(int argc, char **argv)
 		{"stats", 0, NULL, 0},
 		{"stats-reset", 0, NULL, 0},
 		{"xstats", 0, NULL, 0},
+#ifdef RTE_LIB_METRICS
 		{"metrics", 0, NULL, 0},
+#endif
 		{"xstats-reset", 0, NULL, 0},
 		{"xstats-name", required_argument, NULL, 1},
 		{"collectd-format", 0, NULL, 0},
 		{"xstats-ids", 1, NULL, 1},
 		{"host-id", 0, NULL, 0},
 		{"show-port", 0, NULL, 0},
+		{"show-port-private", 0, NULL, 0},
 		{"show-tm", 0, NULL, 0},
 		{"show-crypto", 0, NULL, 0},
 		{"show-ring", optional_argument, NULL, 0},
 		{"show-mempool", optional_argument, NULL, 0},
 		{"iter-mempool", required_argument, NULL, 0},
+		{"dump-regs", required_argument, NULL, 0},
 		{NULL, 0, 0, 0}
 	};
 
@@ -255,10 +271,12 @@ proc_info_parse_args(int argc, char **argv)
 			else if (!strncmp(long_option[option_index].name, "xstats",
 					MAX_LONG_OPT_SZ))
 				enable_xstats = 1;
+#ifdef RTE_LIB_METRICS
 			else if (!strncmp(long_option[option_index].name,
 					"metrics",
 					MAX_LONG_OPT_SZ))
 				enable_metrics = 1;
+#endif
 			/* Reset stats */
 			if (!strncmp(long_option[option_index].name, "stats-reset",
 					MAX_LONG_OPT_SZ))
@@ -270,6 +288,9 @@ proc_info_parse_args(int argc, char **argv)
 			else if (!strncmp(long_option[option_index].name,
 					"show-port", MAX_LONG_OPT_SZ))
 				enable_shw_port = 1;
+			else if (!strncmp(long_option[option_index].name,
+					"show-port-private", MAX_LONG_OPT_SZ))
+				enable_shw_port_priv = 1;
 			else if (!strncmp(long_option[option_index].name,
 					"show-tm", MAX_LONG_OPT_SZ))
 				enable_shw_tm = 1;
@@ -288,6 +309,10 @@ proc_info_parse_args(int argc, char **argv)
 					"iter-mempool", MAX_LONG_OPT_SZ)) {
 				enable_iter_mempool = 1;
 				mempool_iter_name = optarg;
+			} else if (!strncmp(long_option[option_index].name,
+					"dump-regs", MAX_LONG_OPT_SZ)) {
+				enable_dump_regs = 1;
+				dump_regs_file_prefix = optarg;
 			}
 			break;
 		case 1:
@@ -584,6 +609,7 @@ nic_xstats_clear(uint16_t port_id)
 	printf("\n  NIC extended statistics for port %d cleared\n", port_id);
 }
 
+#ifdef RTE_LIB_METRICS
 static void
 metrics_display(int port_id)
 {
@@ -611,7 +637,7 @@ metrics_display(int port_id)
 
 	names =  rte_malloc(NULL, sizeof(struct rte_metric_name) * len, 0);
 	if (names == NULL) {
-		printf("Cannot allocate memory for metrcis names\n");
+		printf("Cannot allocate memory for metrics names\n");
 		rte_free(metrics);
 		return;
 	}
@@ -644,6 +670,7 @@ metrics_display(int port_id)
 	rte_free(metrics);
 	rte_free(names);
 }
+#endif
 
 static void
 show_security_context(uint16_t portid, bool inline_offload)
@@ -728,7 +755,7 @@ show_port(void)
 		}
 
 		printf("\t  -- driver %s device %s socket %d\n",
-		       dev_info.driver_name, dev_info.device->name,
+		       dev_info.driver_name, rte_dev_name(dev_info.device),
 		       rte_eth_dev_socket_id(i));
 
 		ret = rte_eth_dev_owner_get(i, &owner);
@@ -748,11 +775,11 @@ show_port(void)
 		}
 
 		ret = rte_eth_dev_flow_ctrl_get(i, &fc_conf);
-		if (ret == 0 && fc_conf.mode != RTE_FC_NONE)  {
+		if (ret == 0 && fc_conf.mode != RTE_ETH_FC_NONE)  {
 			printf("\t  -- flow control mode %s%s high %u low %u pause %u%s%s\n",
-			       fc_conf.mode == RTE_FC_RX_PAUSE ? "rx " :
-			       fc_conf.mode == RTE_FC_TX_PAUSE ? "tx " :
-			       fc_conf.mode == RTE_FC_FULL ? "full" : "???",
+			       fc_conf.mode == RTE_ETH_FC_RX_PAUSE ? "rx " :
+			       fc_conf.mode == RTE_ETH_FC_TX_PAUSE ? "tx " :
+			       fc_conf.mode == RTE_ETH_FC_FULL ? "full" : "???",
 			       fc_conf.autoneg ? " auto" : "",
 			       fc_conf.high_water,
 			       fc_conf.low_water,
@@ -864,6 +891,25 @@ show_port(void)
 #ifdef RTE_LIB_SECURITY
 		show_security_context(i, true);
 #endif
+	}
+}
+
+static void
+show_port_private_info(void)
+{
+	int i;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " Dump - Ports private information");
+	STATS_BDR_STR(10, bdr_str);
+
+	RTE_ETH_FOREACH_DEV(i) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << i)) == 0)
+			continue;
+
+		snprintf(bdr_str, MAX_STRING_LEN, " Port %u ", i);
+		STATS_BDR_STR(5, bdr_str);
+		rte_eth_dev_priv_dump(i, stdout);
 	}
 }
 
@@ -1089,7 +1135,7 @@ show_tm(void)
 				caplevel.n_nodes_max,
 				caplevel.n_nodes_nonleaf_max,
 				caplevel.n_nodes_leaf_max);
-			printf("\t  -- indetical: non leaf %u leaf %u\n",
+			printf("\t  -- identical: non leaf %u leaf %u\n",
 				caplevel.non_leaf_nodes_identical,
 				caplevel.leaf_nodes_identical);
 
@@ -1208,7 +1254,7 @@ show_crypto(void)
 		       rte_cryptodev_name_get(i),
 		       dev_info.driver_name,
 		       dev_info.driver_id,
-		       dev_info.device->numa_node,
+		       rte_dev_numa_node(dev_info.device),
 		       rte_cryptodev_queue_pair_count(i));
 
 		display_crypto_feature_info(dev_info.feature_flags);
@@ -1243,7 +1289,7 @@ show_ring(char *name)
 			printf("  - Name (%s) on socket (%d)\n"
 				"  - flags:\n"
 				"\t  -- Single Producer Enqueue (%u)\n"
-				"\t  -- Single Consmer Dequeue (%u)\n",
+				"\t  -- Single Consumer Dequeue (%u)\n",
 				ptr->name,
 				ptr->memzone->socket_id,
 				ptr->flags & RING_F_SP_ENQ,
@@ -1286,15 +1332,17 @@ show_mempool(char *name)
 				"\t  -- No cache align (%c)\n"
 				"\t  -- SP put (%c), SC get (%c)\n"
 				"\t  -- Pool created (%c)\n"
-				"\t  -- No IOVA config (%c)\n",
+				"\t  -- No IOVA config (%c)\n"
+				"\t  -- Not used for IO (%c)\n",
 				ptr->name,
 				ptr->socket_id,
-				(flags & MEMPOOL_F_NO_SPREAD) ? 'y' : 'n',
-				(flags & MEMPOOL_F_NO_CACHE_ALIGN) ? 'y' : 'n',
-				(flags & MEMPOOL_F_SP_PUT) ? 'y' : 'n',
-				(flags & MEMPOOL_F_SC_GET) ? 'y' : 'n',
-				(flags & MEMPOOL_F_POOL_CREATED) ? 'y' : 'n',
-				(flags & MEMPOOL_F_NO_IOVA_CONTIG) ? 'y' : 'n');
+				(flags & RTE_MEMPOOL_F_NO_SPREAD) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NO_CACHE_ALIGN) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_SP_PUT) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_SC_GET) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_POOL_CREATED) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NO_IOVA_CONTIG) ? 'y' : 'n',
+				(flags & RTE_MEMPOOL_F_NON_IO) ? 'y' : 'n');
 			printf("  - Size %u Cache %u element %u\n"
 				"  - header %u trailer %u\n"
 				"  - private data size %u\n",
@@ -1346,6 +1394,85 @@ iter_mempool(char *name)
 			printf("\n  - iterated %u objects\n", ret);
 			return;
 		}
+	}
+}
+
+static void
+dump_regs(char *file_prefix)
+{
+#define MAX_FILE_NAME_SZ (MAX_LONG_OPT_SZ + 10)
+	char file_name[MAX_FILE_NAME_SZ];
+	struct rte_dev_reg_info reg_info;
+	struct rte_eth_dev_info dev_info;
+	unsigned char *buf_data;
+	size_t buf_size;
+	FILE *fp_regs;
+	uint16_t i;
+	int ret;
+
+	snprintf(bdr_str, MAX_STRING_LEN, " dump - Port REG");
+	STATS_BDR_STR(10, bdr_str);
+
+	RTE_ETH_FOREACH_DEV(i) {
+		/* Skip if port is not in mask */
+		if ((enabled_port_mask & (1ul << i)) == 0)
+			continue;
+
+		snprintf(bdr_str, MAX_STRING_LEN, " Port (%u)", i);
+		STATS_BDR_STR(5, bdr_str);
+
+		ret = rte_eth_dev_info_get(i, &dev_info);
+		if (ret) {
+			printf("Error getting device info: %d\n", ret);
+			continue;
+		}
+
+		memset(&reg_info, 0, sizeof(reg_info));
+		ret = rte_eth_dev_get_reg_info(i, &reg_info);
+		if (ret) {
+			printf("Error getting device reg info: %d\n", ret);
+			continue;
+		}
+
+		buf_size = reg_info.length * reg_info.width;
+		buf_data = malloc(buf_size);
+		if (buf_data == NULL) {
+			printf("Error allocating %zu bytes buffer\n", buf_size);
+			continue;
+		}
+
+		reg_info.data = buf_data;
+		reg_info.length = 0;
+		ret = rte_eth_dev_get_reg_info(i, &reg_info);
+		if (ret) {
+			printf("Error getting regs from device: %d\n", ret);
+			free(buf_data);
+			continue;
+		}
+
+		snprintf(file_name, MAX_FILE_NAME_SZ, "%s-port%u",
+				file_prefix, i);
+		fp_regs = fopen(file_name, "wb");
+		if (fp_regs == NULL) {
+			printf("Error during opening '%s' for writing: %s\n",
+					file_name, strerror(errno));
+		} else {
+			size_t nr_written;
+
+			nr_written = fwrite(buf_data, 1, buf_size, fp_regs);
+			if (nr_written != buf_size)
+				printf("Error during writing %s: %s\n",
+						file_prefix, strerror(errno));
+			else
+				printf("Device (%s) regs dumped successfully, "
+					"driver:%s version:0X%08X\n",
+					rte_dev_name(dev_info.device),
+					dev_info.driver_name, reg_info.version);
+
+			fclose(fp_regs);
+		}
+
+		free(buf_data);
 	}
 }
 
@@ -1403,10 +1530,10 @@ main(int argc, char **argv)
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
-	/* If no port mask was specified, then show non-owned ports */
+	/* If no port mask was specified, then show all non-owned ports */
 	if (enabled_port_mask == 0) {
 		RTE_ETH_FOREACH_DEV(i)
-			enabled_port_mask = 1ul << i;
+			enabled_port_mask |= 1ul << i;
 	}
 
 	for (i = 0; i < RTE_MAX_ETHPORTS; i++) {
@@ -1432,18 +1559,24 @@ main(int argc, char **argv)
 		else if (nb_xstats_ids > 0)
 			nic_xstats_by_ids_display(i, xstats_ids,
 						  nb_xstats_ids);
+#ifdef RTE_LIB_METRICS
 		else if (enable_metrics)
 			metrics_display(i);
+#endif
 
 	}
 
+#ifdef RTE_LIB_METRICS
 	/* print port independent stats */
 	if (enable_metrics)
 		metrics_display(RTE_METRICS_GLOBAL);
+#endif
 
 	/* show information for PMD */
 	if (enable_shw_port)
 		show_port();
+	if (enable_shw_port_priv)
+		show_port_private_info();
 	if (enable_shw_tm)
 		show_tm();
 	if (enable_shw_crypto)
@@ -1454,6 +1587,8 @@ main(int argc, char **argv)
 		show_mempool(mempool_name);
 	if (enable_iter_mempool)
 		iter_mempool(mempool_iter_name);
+	if (enable_dump_regs)
+		dump_regs(dump_regs_file_prefix);
 
 	RTE_ETH_FOREACH_DEV(i)
 		rte_eth_dev_close(i);

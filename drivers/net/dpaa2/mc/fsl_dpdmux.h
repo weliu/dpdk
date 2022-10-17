@@ -184,6 +184,9 @@ struct dpdmux_attr {
 	uint16_t num_ifs;
 	uint16_t mem_size;
 	uint16_t default_if;
+	uint16_t max_dmat_entries;
+	uint16_t max_mc_groups;
+	uint16_t max_vlan_ids;
 };
 
 int dpdmux_get_attributes(struct fsl_mc_io *mc_io,
@@ -195,6 +198,12 @@ int dpdmux_set_max_frame_length(struct fsl_mc_io *mc_io,
 				uint32_t cmd_flags,
 				uint16_t token,
 				uint16_t max_frame_length);
+
+int dpdmux_get_max_frame_length(struct fsl_mc_io *mc_io,
+				uint32_t cmd_flags,
+				uint16_t token,
+				uint16_t if_id,
+				uint16_t *max_frame_length);
 
 /**
  * enum dpdmux_counter_type - Counter types

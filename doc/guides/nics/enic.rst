@@ -279,9 +279,9 @@ inner and outer packets can be IPv4 or IPv6.
 - Rx checksum offloads.
 
   The NIC validates IPv4/UDP/TCP checksums of both inner and outer packets.
-  Good checksum flags (e.g. ``PKT_RX_L4_CKSUM_GOOD``) indicate that the inner
+  Good checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_GOOD``) indicate that the inner
   packet has the correct checksum, and if applicable, the outer packet also
-  has the correct checksum. Bad checksum flags (e.g. ``PKT_RX_L4_CKSUM_BAD``)
+  has the correct checksum. Bad checksum flags (e.g. ``RTE_MBUF_F_RX_L4_CKSUM_BAD``)
   indicate that the inner and/or outer packets have invalid checksum values.
 
 - Inner Rx packet type classification
@@ -294,35 +294,31 @@ inner and outer packets can be IPv4 or IPv6.
 
   RSS hash calculation, therefore queue selection, is done on inner packets.
 
-In order to enable overlay offload, the 'Enable VXLAN' box should be checked
+In order to enable overlay offload, enable VXLAN and/or Geneve on vNIC
 via CIMC or UCSM followed by a reboot of the server. When PMD successfully
-enables overlay offload, it prints the following message on the console.
+enables overlay offload, it prints one of the following messages on the console.
 
 .. code-block:: console
 
-    Overlay offload is enabled
+    Overlay offload is enabled (VxLAN)
+    Overlay offload is enabled (Geneve)
+    Overlay offload is enabled (VxLAN, Geneve)
 
 By default, PMD enables overlay offload if hardware supports it. To disable
 it, set ``devargs`` parameter ``disable-overlay=1``. For example::
 
     -a 12:00.0,disable-overlay=1
 
-By default, the NIC uses 4789 as the VXLAN port. The user may change
-it through ``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as
-the current NIC has a single VXLAN port number, the user cannot
-configure multiple port numbers.
+By default, the NIC uses 4789 and 6081 as the VXLAN and Geneve ports,
+respectively. The user may change them through
+``rte_eth_dev_udp_tunnel_port_{add,delete}``. However, as the current
+NIC has a single VXLAN port number and a single Geneve port number,
+the user cannot configure multiple port numbers for each tunnel type.
 
-Geneve headers with non-zero options are not supported by default. To
-use Geneve with options, update the VIC firmware to the latest version
-and then set ``devargs`` parameter ``geneve-opt=1``. When Geneve with
-options is enabled, flow API cannot be used as the features are
-currently mutually exclusive. When this feature is successfully
-enabled, PMD prints the following message.
-
-.. code-block:: console
-
-    Geneve with options is enabled
-
+Geneve offload support has evolved over VIC models. On older models,
+Geneve offload and advanced filters are mutually exclusive.  This is
+enforced by UCSM and CIMC, which only allow one of the two features
+to be selected at one time. Newer VIC models do not have this restriction.
 
 Ingress VLAN Rewrite
 --------------------
@@ -436,13 +432,13 @@ Limitations
 .. code-block:: console
 
      vlan_offload = rte_eth_dev_get_vlan_offload(port);
-     vlan_offload |= ETH_VLAN_STRIP_OFFLOAD;
+     vlan_offload |= RTE_ETH_VLAN_STRIP_OFFLOAD;
      rte_eth_dev_set_vlan_offload(port, vlan_offload);
 
 Another alternative is modify the adapter's ingress VLAN rewrite mode so that
 packets with the default VLAN tag are stripped by the adapter and presented to
-DPDK as untagged packets. In this case mbuf->vlan_tci and the PKT_RX_VLAN and
-PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
+DPDK as untagged packets. In this case mbuf->vlan_tci and the RTE_MBUF_F_RX_VLAN and
+RTE_MBUF_F_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
 ``devargs`` parameter ``ig-vlan-rewrite=untag``. For example::
 
     -a 12:00.0,ig-vlan-rewrite=untag
@@ -477,6 +473,8 @@ PKT_RX_VLAN_STRIPPED mbuf flags would not be set. This mode is enabled with the
     packets and then receive them normally. These require 1400 series VIC adapters
     and latest firmware.
   - RAW items are limited to matching UDP tunnel headers like VXLAN.
+  - GTP, GTP-C and GTP-U header matching is enabled, however matching items within
+    the tunnel is not supported.
   - For 1400 VICs, all flows using the RSS action on a port use same hash
     configuration. The RETA is ignored. The queues used in the RSS group must be
     sequential. There is a performance hit if the number of queues is not a power of 2.

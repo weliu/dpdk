@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <ethdev_pci.h>
@@ -287,7 +288,7 @@ txgbe_crypto_remove_sa(struct rte_eth_dev *dev,
 			return -1;
 		}
 
-		/* Disable and clear Rx SPI and key table entryes*/
+		/* Disable and clear Rx SPI and key table entries */
 		reg_val = TXGBE_IPSRXIDX_WRITE |
 			TXGBE_IPSRXIDX_TB_SPI | (sa_index << 3);
 		wr32(hw, TXGBE_IPSRXSPI, 0);
@@ -348,42 +349,33 @@ txgbe_crypto_remove_sa(struct rte_eth_dev *dev,
 static int
 txgbe_crypto_create_session(void *device,
 		struct rte_security_session_conf *conf,
-		struct rte_security_session *session,
-		struct rte_mempool *mempool)
+		struct rte_security_session *session)
 {
 	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)device;
-	struct txgbe_crypto_session *ic_session = NULL;
+	struct txgbe_crypto_session *ic_session = SECURITY_GET_SESS_PRIV(session);
 	struct rte_crypto_aead_xform *aead_xform;
 	struct rte_eth_conf *dev_conf = &eth_dev->data->dev_conf;
-
-	if (rte_mempool_get(mempool, (void **)&ic_session)) {
-		PMD_DRV_LOG(ERR, "Cannot get object from ic_session mempool");
-		return -ENOMEM;
-	}
 
 	if (conf->crypto_xform->type != RTE_CRYPTO_SYM_XFORM_AEAD ||
 			conf->crypto_xform->aead.algo !=
 					RTE_CRYPTO_AEAD_AES_GCM) {
 		PMD_DRV_LOG(ERR, "Unsupported crypto transformation mode\n");
-		rte_mempool_put(mempool, (void *)ic_session);
 		return -ENOTSUP;
 	}
 	aead_xform = &conf->crypto_xform->aead;
 
 	if (conf->ipsec.direction == RTE_SECURITY_IPSEC_SA_DIR_INGRESS) {
-		if (dev_conf->rxmode.offloads & DEV_RX_OFFLOAD_SECURITY) {
+		if (dev_conf->rxmode.offloads & RTE_ETH_RX_OFFLOAD_SECURITY) {
 			ic_session->op = TXGBE_OP_AUTHENTICATED_DECRYPTION;
 		} else {
 			PMD_DRV_LOG(ERR, "IPsec decryption not enabled\n");
-			rte_mempool_put(mempool, (void *)ic_session);
 			return -ENOTSUP;
 		}
 	} else {
-		if (dev_conf->txmode.offloads & DEV_TX_OFFLOAD_SECURITY) {
+		if (dev_conf->txmode.offloads & RTE_ETH_TX_OFFLOAD_SECURITY) {
 			ic_session->op = TXGBE_OP_AUTHENTICATED_ENCRYPTION;
 		} else {
 			PMD_DRV_LOG(ERR, "IPsec encryption not enabled\n");
-			rte_mempool_put(mempool, (void *)ic_session);
 			return -ENOTSUP;
 		}
 	}
@@ -395,12 +387,9 @@ txgbe_crypto_create_session(void *device,
 	ic_session->spi = conf->ipsec.spi;
 	ic_session->dev = eth_dev;
 
-	set_sec_session_private_data(session, ic_session);
-
 	if (ic_session->op == TXGBE_OP_AUTHENTICATED_ENCRYPTION) {
 		if (txgbe_crypto_add_sa(ic_session)) {
 			PMD_DRV_LOG(ERR, "Failed to add SA\n");
-			rte_mempool_put(mempool, (void *)ic_session);
 			return -EPERM;
 		}
 	}
@@ -419,9 +408,7 @@ txgbe_crypto_remove_session(void *device,
 		struct rte_security_session *session)
 {
 	struct rte_eth_dev *eth_dev = device;
-	struct txgbe_crypto_session *ic_session =
-		(struct txgbe_crypto_session *)
-		get_sec_session_private_data(session);
+	struct txgbe_crypto_session *ic_session = SECURITY_GET_SESS_PRIV(session);
 	struct rte_mempool *mempool = rte_mempool_from_obj(ic_session);
 
 	if (eth_dev != ic_session->dev) {
@@ -459,8 +446,8 @@ txgbe_crypto_update_mb(void *device __rte_unused,
 		struct rte_security_session *session,
 		       struct rte_mbuf *m, void *params __rte_unused)
 {
-	struct txgbe_crypto_session *ic_session =
-			get_sec_session_private_data(session);
+	struct txgbe_crypto_session *ic_session = SECURITY_GET_SESS_PRIV(session);
+
 	if (ic_session->op == TXGBE_OP_AUTHENTICATED_ENCRYPTION) {
 		union txgbe_crypto_tx_desc_md *mdata =
 			(union txgbe_crypto_tx_desc_md *)
@@ -610,11 +597,11 @@ txgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 	tx_offloads = dev->data->dev_conf.txmode.offloads;
 
 	/* sanity checks */
-	if (rx_offloads & DEV_RX_OFFLOAD_TCP_LRO) {
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_TCP_LRO) {
 		PMD_DRV_LOG(ERR, "RSC and IPsec not supported");
 		return -1;
 	}
-	if (rx_offloads & DEV_RX_OFFLOAD_KEEP_CRC) {
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_KEEP_CRC) {
 		PMD_DRV_LOG(ERR, "HW CRC strip needs to be enabled for IPsec");
 		return -1;
 	}
@@ -633,7 +620,7 @@ txgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 	reg |= TXGBE_SECRXCTL_CRCSTRIP;
 	wr32(hw, TXGBE_SECRXCTL, reg);
 
-	if (rx_offloads & DEV_RX_OFFLOAD_SECURITY) {
+	if (rx_offloads & RTE_ETH_RX_OFFLOAD_SECURITY) {
 		wr32m(hw, TXGBE_SECRXCTL, TXGBE_SECRXCTL_ODSA, 0);
 		reg = rd32m(hw, TXGBE_SECRXCTL, TXGBE_SECRXCTL_ODSA);
 		if (reg != 0) {
@@ -641,7 +628,7 @@ txgbe_crypto_enable_ipsec(struct rte_eth_dev *dev)
 			return -1;
 		}
 	}
-	if (tx_offloads & DEV_TX_OFFLOAD_SECURITY) {
+	if (tx_offloads & RTE_ETH_TX_OFFLOAD_SECURITY) {
 		wr32(hw, TXGBE_SECTXCTL, TXGBE_SECTXCTL_STFWD);
 		reg = rd32(hw, TXGBE_SECTXCTL);
 		if (reg != TXGBE_SECTXCTL_STFWD) {
@@ -660,8 +647,12 @@ txgbe_crypto_add_ingress_sa_from_flow(const void *sess,
 				      const void *ip_spec,
 				      uint8_t is_ipv6)
 {
-	struct txgbe_crypto_session *ic_session =
-			get_sec_session_private_data(sess);
+	/**
+	 * FIXME Updating the session priv data when the session is const.
+	 * Typecasting done here is wrong and the implementation need to be corrected.
+	 */
+	struct txgbe_crypto_session *ic_session = (void *)(uintptr_t)
+			((const struct rte_security_session *)sess)->driver_priv_data;
 
 	if (ic_session->op == TXGBE_OP_AUTHENTICATED_DECRYPTION) {
 		if (is_ipv6) {

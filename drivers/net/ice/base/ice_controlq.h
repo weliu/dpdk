@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_CONTROLQ_H_
@@ -10,6 +10,7 @@
 /* Maximum buffer lengths for all control queue types */
 #define ICE_AQ_MAX_BUF_LEN 4096
 #define ICE_MBXQ_MAX_BUF_LEN 4096
+#define ICE_SBQ_MAX_BUF_LEN 512
 
 #define ICE_CTL_Q_DESC(R, i) \
 	(&(((struct ice_aq_desc *)((R).desc_buf.va))[i]))
@@ -30,6 +31,7 @@ enum ice_ctl_q {
 	ICE_CTL_Q_UNKNOWN = 0,
 	ICE_CTL_Q_ADMIN,
 	ICE_CTL_Q_MAILBOX,
+	ICE_CTL_Q_SB,
 };
 
 /* Control Queue timeout settings - max delay 1s */

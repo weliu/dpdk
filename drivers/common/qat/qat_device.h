@@ -4,7 +4,7 @@
 #ifndef _QAT_DEVICE_H_
 #define _QAT_DEVICE_H_
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 
 #include "qat_common.h"
 #include "qat_logs.h"
@@ -16,20 +16,38 @@
 
 #define QAT_DEV_NAME_MAX_LEN	64
 
+#define QAT_IPSEC_MB_LIB "qat_ipsec_mb_lib"
 #define SYM_ENQ_THRESHOLD_NAME "qat_sym_enq_threshold"
 #define ASYM_ENQ_THRESHOLD_NAME "qat_asym_enq_threshold"
 #define COMP_ENQ_THRESHOLD_NAME "qat_comp_enq_threshold"
 #define MAX_QP_THRESHOLD_SIZE	32
 
+/**
+ * Function prototypes for GENx specific device operations.
+ **/
+typedef int (*qat_dev_reset_ring_pairs_t)
+		(struct qat_pci_device *);
+typedef const struct rte_mem_resource* (*qat_dev_get_transport_bar_t)
+		(struct rte_pci_device *);
+typedef int (*qat_dev_get_misc_bar_t)
+		(struct rte_mem_resource **, struct rte_pci_device *);
+typedef int (*qat_dev_read_config_t)
+		(struct qat_pci_device *);
+typedef int (*qat_dev_get_extra_size_t)(void);
+
+struct qat_dev_hw_spec_funcs {
+	qat_dev_reset_ring_pairs_t	qat_dev_reset_ring_pairs;
+	qat_dev_get_transport_bar_t	qat_dev_get_transport_bar;
+	qat_dev_get_misc_bar_t		qat_dev_get_misc_bar;
+	qat_dev_read_config_t		qat_dev_read_config;
+	qat_dev_get_extra_size_t	qat_dev_get_extra_size;
+};
+
+extern struct qat_dev_hw_spec_funcs *qat_dev_hw_spec[];
+
 struct qat_dev_cmd_param {
 	const char *name;
 	uint16_t val;
-};
-
-enum qat_comp_num_im_buffers {
-	QAT_NUM_INTERM_BUFS_GEN1 = 12,
-	QAT_NUM_INTERM_BUFS_GEN2 = 20,
-	QAT_NUM_INTERM_BUFS_GEN3 = 20
 };
 
 struct qat_device_info {
@@ -59,8 +77,7 @@ struct qat_device_info {
 
 extern struct qat_device_info qat_pci_devs[];
 
-struct qat_sym_dev_private;
-struct qat_asym_dev_private;
+struct qat_cryptodev_private;
 struct qat_comp_dev_private;
 
 /*
@@ -89,14 +106,14 @@ struct qat_pci_device {
 	/**< links to qps set up for each service, index same as on API */
 
 	/* Data relating to symmetric crypto service */
-	struct qat_sym_dev_private *sym_dev;
+	struct qat_cryptodev_private *sym_dev;
 	/**< link back to cryptodev private data */
 
 	int qat_sym_driver_id;
 	/**< Symmetric driver id used by this device */
 
 	/* Data relating to asymmetric crypto service */
-	struct qat_asym_dev_private *asym_dev;
+	struct qat_cryptodev_private *asym_dev;
 	/**< link back to cryptodev private data */
 
 	int qat_asym_driver_id;
@@ -105,12 +122,25 @@ struct qat_pci_device {
 	/* Data relating to compression service */
 	struct qat_comp_dev_private *comp_dev;
 	/**< link back to compressdev private data */
+	void *misc_bar_io_addr;
+	/**< Address of misc bar */
+	void *dev_private;
+	/**< Per generation specific information */
 };
 
 struct qat_gen_hw_data {
 	enum qat_device_gen dev_gen;
 	const struct qat_qp_hw_data (*qp_hw_data)[ADF_MAX_QPS_ON_ANY_SERVICE];
-	enum qat_comp_num_im_buffers comp_num_im_bufs_required;
+	struct qat_pf2vf_dev *pf2vf_dev;
+};
+
+struct qat_pf2vf_dev {
+	uint32_t pf2vf_offset;
+	uint32_t vf2pf_offset;
+	int pf2vf_type_shift;
+	uint32_t pf2vf_type_mask;
+	int pf2vf_data_shift;
+	uint32_t pf2vf_data_mask;
 };
 
 extern struct qat_gen_hw_data qat_gen_config[];

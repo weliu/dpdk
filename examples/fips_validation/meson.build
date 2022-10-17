@@ -9,15 +9,20 @@
 deps += ['cryptodev']
 allow_experimental_apis = true
 sources = files(
-	'fips_validation_aes.c',
-	'fips_validation.c',
-	'fips_validation_hmac.c',
-	'fips_validation_tdes.c',
-	'fips_validation_gcm.c',
-	'fips_validation_cmac.c',
-	'fips_validation_ccm.c',
-	'fips_validation_sha.c',
-	'fips_validation_xts.c',
-	'fips_dev_self_test.c',
-	'main.c'
+        'fips_validation_aes.c',
+        'fips_validation.c',
+        'fips_validation_hmac.c',
+        'fips_validation_tdes.c',
+        'fips_validation_gcm.c',
+        'fips_validation_cmac.c',
+        'fips_validation_ccm.c',
+        'fips_validation_sha.c',
+        'fips_validation_xts.c',
+        'fips_dev_self_test.c',
+        'main.c',
 )
+
+if dpdk_conf.has('RTE_HAS_JANSSON')
+    ext_deps += jansson_dep
+    cflags += '-DUSE_JANSSON'
+endif

@@ -1,11 +1,11 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #ifndef _ICE_FDIR_H_
 #define _ICE_FDIR_H_
 
-#include "ice_common.h"
+#include "ice_type.h"
 
 #define ICE_FDIR_IP_PROTOCOLS
 #define ICE_IP_PROTO_TCP		6
@@ -16,6 +16,18 @@
 
 #define ICE_FDIR_GTPU_IP_INNER_PKT_OFF 50
 #define ICE_FDIR_GTPU_EH_INNER_PKT_OFF 58
+#define ICE_FDIR_IPV4_GRE_INNER_PKT_OFF 38
+#define ICE_FDIR_IPV6_GRE_INNER_PKT_OFF 58
+#define ICE_FDIR_V4_V4_GTPOGRE_PKT_OFF	74
+#define ICE_FDIR_V4_V6_GTPOGRE_PKT_OFF	94
+#define ICE_FDIR_V6_V4_GTPOGRE_PKT_OFF	94
+#define ICE_FDIR_V6_V6_GTPOGRE_PKT_OFF	114
+#define ICE_FDIR_V4_V4_GTPOGRE_EH_PKT_OFF	82
+#define ICE_FDIR_V4_V6_GTPOGRE_EH_PKT_OFF	102
+#define ICE_FDIR_V6_V4_GTPOGRE_EH_PKT_OFF	102
+#define ICE_FDIR_V6_V6_GTPOGRE_EH_PKT_OFF	122
+#define ICE_FDIR_IPV4_L2TPV2_PPP_PKT_OFF	52
+#define ICE_FDIR_IPV6_L2TPV2_PPP_PKT_OFF	72
 
 #define ICE_FDIR_TUN_PKT_OFF		50
 #define ICE_FDIR_MAX_RAW_PKT_SIZE	(512 + ICE_FDIR_TUN_PKT_OFF)
@@ -42,10 +54,12 @@
 
 #define ICE_MAC_ETHTYPE_OFFSET		12
 #define ICE_IPV4_TOS_OFFSET		15
+#define ICE_IPV4_ID_OFFSET		18
 #define ICE_IPV4_TTL_OFFSET		22
 #define ICE_IPV6_TC_OFFSET		14
 #define ICE_IPV6_HLIM_OFFSET		21
 #define ICE_IPV6_PROTO_OFFSET		20
+#define ICE_IPV6_ID_OFFSET		58
 /* For TUN inner (without inner MAC) */
 #define ICE_IPV4_NO_MAC_TOS_OFFSET	1
 #define ICE_IPV4_NO_MAC_TTL_OFFSET	8
@@ -69,6 +83,10 @@
 #define ICE_IPV4_GTPU_QFI_OFFSET	56
 #define ICE_IPV6_GTPU_TEID_OFFSET	66
 #define ICE_IPV6_GTPU_QFI_OFFSET	76
+#define ICE_IPV4_GTPOGRE_TEID_OFFSET	70
+#define ICE_IPV4_GTPOGRE_QFI_OFFSET	80
+#define ICE_IPV6_GTPOGRE_TEID_OFFSET	90
+#define ICE_IPV6_GTPOGRE_QFI_OFFSET	100
 #define ICE_IPV4_L2TPV3_SESS_ID_OFFSET	34
 #define ICE_IPV6_L2TPV3_SESS_ID_OFFSET	54
 #define ICE_IPV4_ESP_SPI_OFFSET		34
@@ -77,18 +95,30 @@
 #define ICE_IPV6_AH_SPI_OFFSET		58
 #define ICE_IPV4_NAT_T_ESP_SPI_OFFSET	42
 #define ICE_IPV6_NAT_T_ESP_SPI_OFFSET	62
-#define ICE_IPV4_VXLAN_VNI_OFFSET	45
+#define ICE_IPV4_VXLAN_VNI_OFFSET	46
 #define ICE_ECPRI_TP0_PC_ID_OFFSET	18
 #define ICE_IPV4_UDP_ECPRI_TP0_PC_ID_OFFSET			46
+#define ICE_IPV4_L2TPV2_SESS_ID_OFFSET		46
+#define ICE_IPV6_L2TPV2_SESS_ID_OFFSET		66
+#define ICE_IPV4_L2TPV2_LEN_SESS_ID_OFFSET	48
+#define ICE_IPV6_L2TPV2_LEN_SESS_ID_OFFSET	68
 
 #define ICE_FDIR_MAX_FLTRS		16384
 
-/* IP v4 has 2 flag bits that enable fragment processing: DF and MF. DF
+/* IPv4 has 2 flag bits that enable fragment processing: DF and MF. DF
  * requests that the packet not be fragmented. MF indicates that a packet has
- * been fragmented.
+ * been fragmented, except that for the last fragment has a non-zero
+ * Fragment Offset field with zero MF.
  */
-#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x20
-#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x40
+#define ICE_FDIR_IPV4_PKT_FLAG_MF		0x20
+#define ICE_FDIR_IPV4_PKT_FLAG_MF_SHIFT	8
+#define ICE_FDIR_IPV4_PKT_FLAG_DF		0x40
+
+/* For IPv6 fragmented packets, all fragments except the last have
+ * the MF flag set.
+ */
+#define ICE_FDIR_IPV6_PKT_FLAG_MF		0x100
+#define ICE_FDIR_IPV6_PKT_FLAG_MF_SHIFT	8
 
 enum ice_fltr_prgm_desc_dest {
 	ICE_FLTR_PRGM_DESC_DEST_DROP_PKT,
@@ -150,6 +180,7 @@ struct ice_fdir_v4 {
 	u8 ip_ver;
 	u8 proto;
 	u8 ttl;
+	__be16 packet_id;
 };
 
 #define ICE_IPV6_ADDR_LEN_AS_U32		4
@@ -164,6 +195,7 @@ struct ice_fdir_v6 {
 	u8 tc;
 	u8 proto;
 	u8 hlim;
+	__be32 packet_id;
 };
 
 struct ice_fdir_udp_gtp {
@@ -194,6 +226,16 @@ struct ice_fdir_udp_vxlan {
 
 struct ice_fdir_ecpri {
 	__be16 pc_id;
+};
+
+struct ice_fdir_l2tpv2 {
+	__be16 flags_version;
+	__be16 length;
+	__be16 tunnel_id;
+	__be16 session_id;
+	__be16 ns;
+	__be16 nr;
+	__be16 offset_size;
 };
 
 struct ice_fdir_extra {
@@ -235,6 +277,9 @@ struct ice_fdir_fltr {
 	struct ice_fdir_ecpri ecpri_data;
 	struct ice_fdir_ecpri ecpri_mask;
 
+	struct ice_fdir_l2tpv2 l2tpv2_data;
+	struct ice_fdir_l2tpv2 l2tpv2_mask;
+
 	struct ice_fdir_extra ext_data;
 	struct ice_fdir_extra ext_mask;
 
@@ -267,6 +312,11 @@ struct ice_fdir_base_pkt {
 	u16 tun_pkt_len;
 	const u8 *tun_pkt;
 };
+
+bool
+ice_fdir_comp_rules_basic(struct ice_fdir_fltr *a,  struct ice_fdir_fltr *b);
+bool
+ice_fdir_comp_rules_extended(struct ice_fdir_fltr *a,  struct ice_fdir_fltr *b);
 
 enum ice_status ice_alloc_fd_res_cntr(struct ice_hw *hw, u16 *cntr_id);
 enum ice_status ice_free_fd_res_cntr(struct ice_hw *hw, u16 cntr_id);

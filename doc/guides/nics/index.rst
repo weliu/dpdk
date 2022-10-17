@@ -19,12 +19,14 @@ Network Interface Controller Drivers
     axgbe
     bnx2x
     bnxt
+    cnxk
     cxgbe
     dpaa
     dpaa2
     e1000em
     ena
     enetc
+    enetfec
     enic
     fm10k
     hinic
@@ -39,6 +41,7 @@ Network Interface Controller Drivers
     intel_vf
     kni
     liquidio
+    mana
     memif
     mlx4
     mlx5
@@ -47,15 +50,14 @@ Network Interface Controller Drivers
     netvsc
     nfb
     nfp
+    ngbe
     null
     octeontx
-    octeontx2
-    octeontx_ep
+    octeon_ep
     pfe
     qede
     sfc_efx
     softnic
-    szedata2
     tap
     thunderx
     txgbe

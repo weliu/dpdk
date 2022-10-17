@@ -24,10 +24,10 @@ If you type a partial command and hit ``<TAB>`` you get a list of the available 
 
    testpmd> show port <TAB>
 
-       info [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|stat_qmap|dcb_tc X
-       info [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|stat_qmap|dcb_tc all
-       stats [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|stat_qmap|dcb_tc X
-       stats [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|stat_qmap|dcb_tc all
+       info [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|dcb_tc|cap X
+       info [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|dcb_tc|cap all
+       stats [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|dcb_tc|cap X
+       stats [Mul-choice STRING]: show|clear port info|stats|xstats|fdir|dcb_tc|cap all
        ...
 
 
@@ -49,15 +49,17 @@ These are divided into sections and can be accessed using help, help section or 
 .. code-block:: console
 
    testpmd> help
+       Help is available for the following sections:
 
-       help control    : Start and stop forwarding.
-       help display    : Displaying port, stats and config information.
-       help config     : Configuration information.
-       help ports      : Configuring ports.
-       help registers  : Reading and setting port registers.
-       help filters    : Filters configuration help.
-       help all        : All of the above sections.
-
+           help control                    : Start and stop forwarding.
+           help display                    : Displaying port, stats and config information.
+           help config                     : Configuration information.
+           help ports                      : Configuring ports.
+           help filters                    : Filters configuration help.
+           help traffic_management         : Traffic Management commands.
+           help devices                    : Device related commands.
+           help drivers                    : Driver specific commands.
+           help all                        : All of the above sections.
 
 Command File Functions
 ----------------------
@@ -159,7 +161,7 @@ show port
 
 Display information for a given port or all ports::
 
-   testpmd> show port (info|summary|stats|xstats|fdir|stat_qmap|dcb_tc) (port_id|all)
+   testpmd> show port (info|summary|stats|xstats|fdir|dcb_tc|cap) (port_id|all)
 
 The available information categories are:
 
@@ -172,8 +174,6 @@ The available information categories are:
 * ``xstats``: RX/TX extended NIC statistics.
 
 * ``fdir``: Flow Director information and statistics.
-
-* ``stat_qmap``: Queue statistics mapping.
 
 * ``dcb_tc``: DCB information such as TC mapping.
 
@@ -244,7 +244,7 @@ clear port
 
 Clear the port statistics and forward engine statistics for a given port or for all ports::
 
-   testpmd> clear port (info|stats|xstats|fdir|stat_qmap) (port_id|all)
+   testpmd> clear port (info|stats|xstats|fdir) (port_id|all)
 
 For example::
 
@@ -278,7 +278,7 @@ show config
 Displays the configuration of the application.
 The configuration comes from the command-line, the runtime or the application defaults::
 
-   testpmd> show config (rxtx|cores|fwd|rxoffs|rxpkts|txpkts|txtimes)
+   testpmd> show config (rxtx|cores|fwd|rxoffs|rxpkts|rxhdrs|txpkts|txtimes)
 
 The available information categories are:
 
@@ -290,7 +290,9 @@ The available information categories are:
 
 * ``rxoffs``: Packet offsets for RX split.
 
-* ``rxpkts``: Packets to RX split configuration.
+* ``rxpkts``: Packets to RX length-based split configuration.
+
+* ``rxhdrs``: Packets to RX proto-based split configuration.
 
 * ``txpkts``: Packets to TX configuration.
 
@@ -316,7 +318,7 @@ set fwd
 Set the packet forwarding mode::
 
    testpmd> set fwd (io|mac|macswap|flowgen| \
-                     rxonly|txonly|csum|icmpecho|noisy|5tswap) (""|retry)
+                     rxonly|txonly|csum|icmpecho|noisy|5tswap|shared-rxq) (""|retry)
 
 ``retry`` can be specified for forwarding engines except ``rx_only``.
 
@@ -358,6 +360,9 @@ The available information categories are:
   L3 swaps the source address and destination address of IP (v4 and v6).
 
   L4 swaps the source port and destination port of transport layer (TCP and UDP).
+
+* ``shared-rxq``: Receive only for shared Rx queue.
+  Resolve packet source port from mbuf and update stream statistics accordingly.
 
 Example::
 
@@ -427,20 +432,6 @@ For example::
    testpmd> read txd 0 0 4
         0x00000001 - 0x24C3C440 / 0x000F0000 - 0x2330003C
 
-ddp get list
-~~~~~~~~~~~~
-
-Get loaded dynamic device personalization (DDP) package info list::
-
-   testpmd> ddp get list (port_id)
-
-ddp get info
-~~~~~~~~~~~~
-
-Display information about dynamic device personalization (DDP) profile::
-
-   testpmd> ddp get info (profile_path)
-
 show vf stats
 ~~~~~~~~~~~~~
 
@@ -454,13 +445,6 @@ clear vf stats
 Reset VF statistics::
 
    testpmd> clear vf stats (port_id) (vf_id)
-
-show port pctype mapping
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-List all items from the pctype mapping table::
-
-   testpmd> show port (port_id) pctype mapping
 
 show rx offloading capabilities
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -525,6 +509,15 @@ show port multicast mac addresses info
 Show multicast mac addresses added for a specific port::
 
    testpmd> show port (port_id) mcast_macs
+
+show flow transfer proxy port ID for the given port
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Show proxy port ID to use as the 1st argument in commands to
+manage ``transfer`` flows and their indirect components.
+::
+
+   testpmd> show port (port_id) flow transfer proxy
 
 show device info
 ~~~~~~~~~~~~~~~~
@@ -808,6 +801,20 @@ mbuf for remaining segments will be allocated from the last valid pool).
 Where x[,y]* represents a CSV list of values, without white space. Zero value
 means to use the corresponding memory pool data buffer size.
 
+set rxhdrs
+~~~~~~~~~~
+
+Set the protocol headers of segments to scatter packets on receiving
+if split feature is engaged.
+Affects only the queues configured with split offloads
+(currently BUFFER_SPLIT is supported only).
+
+   testpmd> set rxhdrs (eth[,ipv4]*)
+
+Where eth[,ipv4]* represents a CSV list of values, without white space.
+If the list of offsets is shorter than the list of segments,
+zero offsets will be used for the remaining segments.
+
 set txpkts
 ~~~~~~~~~~
 
@@ -938,58 +945,12 @@ set drop enable bit for all queues::
 
    testpmd> set all queues drop (port_id) (on|off)
 
-set split drop enable (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-set split drop enable bit for VF from PF::
-
-   testpmd> set vf split drop (port_id) (vf_id) (on|off)
-
 set mac antispoof (for VF)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 Set mac antispoof for a VF from the PF::
 
    testpmd> set vf mac antispoof  (port_id) (vf_id) (on|off)
-
-set macsec offload
-~~~~~~~~~~~~~~~~~~
-
-Enable/disable MACsec offload::
-
-   testpmd> set macsec offload (port_id) on encrypt (on|off) replay-protect (on|off)
-   testpmd> set macsec offload (port_id) off
-
-set macsec sc
-~~~~~~~~~~~~~
-
-Configure MACsec secure connection (SC)::
-
-   testpmd> set macsec sc (tx|rx) (port_id) (mac) (pi)
-
-.. note::
-
-   The pi argument is ignored for tx.
-   Check the NIC Datasheet for hardware limits.
-
-set macsec sa
-~~~~~~~~~~~~~
-
-Configure MACsec secure association (SA)::
-
-   testpmd> set macsec sa (tx|rx) (port_id) (idx) (an) (pn) (key)
-
-.. note::
-
-   The IDX value must be 0 or 1.
-   Check the NIC Datasheet for hardware limits.
-
-set broadcast mode (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set broadcast mode for a VF from the PF::
-
-   testpmd> set vf broadcast (port_id) (vf_id) (on|off)
 
 vlan set stripq
 ~~~~~~~~~~~~~~~
@@ -1011,13 +972,6 @@ vlan set insert (for VF)
 Set VLAN insert for a VF from the PF::
 
    testpmd> set vf vlan insert (port_id) (vf_id) (vlan_id)
-
-vlan set tag (for VF)
-~~~~~~~~~~~~~~~~~~~~~
-
-Set VLAN tag for a VF from the PF::
-
-   testpmd> set vf vlan tag (port_id) (vf_id) (on|off)
 
 vlan set antispoof (for VF)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1144,50 +1098,6 @@ Where:
 .. note::
 
    Check the NIC Datasheet for hardware limits.
-
-RSS queue region
-~~~~~~~~~~~~~~~~
-
-Set RSS queue region span on a port::
-
-   testpmd> set port (port_id) queue-region region_id (value) \
-		queue_start_index (value) queue_num (value)
-
-Set flowtype mapping on a RSS queue region on a port::
-
-   testpmd> set port (port_id) queue-region region_id (value) flowtype (value)
-
-where:
-
-* For the flowtype(pctype) of packet,the specific index for each type has
-  been defined in file i40e_type.h as enum i40e_filter_pctype.
-
-Set user priority mapping on a RSS queue region on a port::
-
-   testpmd> set port (port_id) queue-region UP (value) region_id (value)
-
-Flush all queue region related configuration on a port::
-
-   testpmd> set port (port_id) queue-region flush (on|off)
-
-where:
-
-* ``on``: is just an enable function which server for other configuration,
-  it is for all configuration about queue region from up layer,
-  at first will only keep in DPDK software stored in driver,
-  only after "flush on", it commit all configuration to HW.
-
-* ``"off``: is just clean all configuration about queue region just now,
-  and restore all to DPDK i40e driver default config when start up.
-
-Show all queue region related configuration info on a port::
-
-   testpmd> show port (port_id) queue-region
-
-.. note::
-
-  Queue region only support on PF by now, so these command is
-  only for configuration of queue region on PF port.
 
 csum parse-tunnel
 ~~~~~~~~~~~~~~~~~
@@ -1450,59 +1360,6 @@ Set the allmulti mode for a port or for all ports::
 
 Same as the ifconfig (8) option. Controls how multicast packets are handled.
 
-set promisc (for VF)
-~~~~~~~~~~~~~~~~~~~~
-
-Set the unicast promiscuous mode for a VF from PF.
-It's supported by Intel i40e NICs now.
-In promiscuous mode packets are not dropped if they aren't for the specified MAC address::
-
-   testpmd> set vf promisc (port_id) (vf_id) (on|off)
-
-set allmulticast (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set the multicast promiscuous mode for a VF from PF.
-It's supported by Intel i40e NICs now.
-In promiscuous mode packets are not dropped if they aren't for the specified MAC address::
-
-   testpmd> set vf allmulti (port_id) (vf_id) (on|off)
-
-set tx max bandwidth (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set TX max absolute bandwidth (Mbps) for a VF from PF::
-
-   testpmd> set vf tx max-bandwidth (port_id) (vf_id) (max_bandwidth)
-
-set tc tx min bandwidth (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set all TCs' TX min relative bandwidth (%) for a VF from PF::
-
-   testpmd> set vf tc tx min-bandwidth (port_id) (vf_id) (bw1, bw2, ...)
-
-set tc tx max bandwidth (for VF)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set a TC's TX max absolute bandwidth (Mbps) for a VF from PF::
-
-   testpmd> set vf tc tx max-bandwidth (port_id) (vf_id) (tc_no) (max_bandwidth)
-
-set tc strict link priority mode
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set some TCs' strict link priority mode on a physical port::
-
-   testpmd> set tx strict-link-priority (port_id) (tc_bitmap)
-
-set tc tx min bandwidth
-~~~~~~~~~~~~~~~~~~~~~~~
-
-Set all TCs' TX min relative bandwidth (%) globally for all PF and VFs::
-
-   testpmd> set tc tx min-bandwidth (port_id) (bw1, bw2, ...)
-
 set flow_ctrl rx
 ~~~~~~~~~~~~~~~~
 
@@ -1526,6 +1383,13 @@ Where:
 
 * ``autoneg``: Change the auto-negotiation parameter.
 
+show flow control
+~~~~~~~~~~~~~~~~~
+
+show the link flow control parameter on a port::
+
+   testpmd> show port <port_id> flow_ctrl
+
 set pfc_ctrl rx
 ~~~~~~~~~~~~~~~
 
@@ -1543,6 +1407,38 @@ Where:
 * ``pause_time`` (integer): Pause quota in the Pause frame.
 
 * ``priority`` (0-7): VLAN User Priority.
+
+set pfc_queue_ctrl
+~~~~~~~~~~~~~~~~~~
+
+Set the priority flow control parameter on a given Rx and Tx queue of a port::
+
+   testpmd> set pfc_queue_ctrl <port_id> rx (on|off) <tx_qid> <tx_tc> \
+            tx (on|off) <rx_qid> <rx_tc> <pause_time>
+
+Where:
+
+* ``tx_qid`` (integer): Tx qid for which ``tx_tc`` will be applied and traffic
+  will be paused when PFC frame is received with ``tx_tc`` enabled.
+
+* ``tx_tc`` (0-15): TC for which traffic is to be paused for xmit.
+
+* ``rx_qid`` (integer): Rx qid for which threshold will be applied and PFC
+  frame will be generated with ``tx_tc`` when exceeds the threshold.
+
+* ``rx_tc`` (0-15): TC filled in PFC frame for which remote Tx is to be paused.
+
+* ``pause_time`` (integer): Pause quanta filled in the PFC frame for which
+  interval, remote Tx will be paused. Valid only if Tx pause is on.
+
+Set Rx queue available descriptors threshold
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set available descriptors threshold for a specific Rx queue of port::
+
+  testpmd> set port (port_id) rxq (queue_id) avail_thresh (0..99)
+
+Use 0 value to disable the threshold and corresponding event.
 
 set stat_qmap
 ~~~~~~~~~~~~~
@@ -1605,31 +1501,6 @@ Set TX rate limitation for queues in VF on a port::
 
    testpmd> set port (port_id) vf (vf_id) rate (rate_value) queue_mask (queue_mask)
 
-set port - mirror rule
-~~~~~~~~~~~~~~~~~~~~~~
-
-Set pool or vlan type mirror rule for a port::
-
-   testpmd> set port (port_id) mirror-rule (rule_id) \
-            (pool-mirror-up|pool-mirror-down|vlan-mirror) \
-            (poolmask|vlanid[,vlanid]*) dst-pool (pool_id) (on|off)
-
-Set link mirror rule for a port::
-
-   testpmd> set port (port_id) mirror-rule (rule_id) \
-           (uplink-mirror|downlink-mirror) dst-pool (pool_id) (on|off)
-
-For example to enable mirror traffic with vlan 0,1 to pool 0::
-
-   set port 0 mirror-rule 0 vlan-mirror 0,1 dst-pool 0 on
-
-reset port - mirror rule
-~~~~~~~~~~~~~~~~~~~~~~~~
-
-Reset a mirror rule for a port::
-
-   testpmd> reset port (port_id) mirror-rule (rule_id)
-
 set flush_rx
 ~~~~~~~~~~~~
 
@@ -1638,48 +1509,6 @@ The default is flush ``on``.
 Mainly used with PCAP drivers to turn off the default behavior of flushing the first 512 packets on RX streams::
 
    testpmd> set flush_rx off
-
-set bypass mode
-~~~~~~~~~~~~~~~
-
-Set the bypass mode for the lowest port on bypass enabled NIC::
-
-   testpmd> set bypass mode (normal|bypass|isolate) (port_id)
-
-set bypass event
-~~~~~~~~~~~~~~~~
-
-Set the event required to initiate specified bypass mode for the lowest port on a bypass enabled::
-
-   testpmd> set bypass event (timeout|os_on|os_off|power_on|power_off) \
-            mode (normal|bypass|isolate) (port_id)
-
-Where:
-
-* ``timeout``: Enable bypass after watchdog timeout.
-
-* ``os_on``: Enable bypass when OS/board is powered on.
-
-* ``os_off``: Enable bypass when OS/board is powered off.
-
-* ``power_on``: Enable bypass when power supply is turned on.
-
-* ``power_off``: Enable bypass when power supply is turned off.
-
-
-set bypass timeout
-~~~~~~~~~~~~~~~~~~
-
-Set the bypass watchdog timeout to ``n`` seconds where 0 = instant::
-
-   testpmd> set bypass timeout (0|1.5|2|3|4|8|16|32)
-
-show bypass config
-~~~~~~~~~~~~~~~~~~
-
-Show the bypass configuration for a bypass enabled NIC using the lowest port on the NIC::
-
-   testpmd> show bypass config (port_id)
 
 set link up
 ~~~~~~~~~~~
@@ -1714,57 +1543,6 @@ Enable/disable E-tag based forwarding on a port::
 
    testpmd> E-tag set forwarding (on|off) port (port_id)
 
-ddp add
-~~~~~~~
-
-Load a dynamic device personalization (DDP) profile and store backup profile::
-
-   testpmd> ddp add (port_id) (profile_path[,backup_profile_path])
-
-ddp del
-~~~~~~~
-
-Delete a dynamic device personalization profile and restore backup profile::
-
-   testpmd> ddp del (port_id) (backup_profile_path)
-
-ptype mapping
-~~~~~~~~~~~~~
-
-List all items from the ptype mapping table::
-
-   testpmd> ptype mapping get (port_id) (valid_only)
-
-Where:
-
-* ``valid_only``: A flag indicates if only list valid items(=1) or all itemss(=0).
-
-Replace a specific or a group of software defined ptype with a new one::
-
-   testpmd> ptype mapping replace  (port_id) (target) (mask) (pkt_type)
-
-where:
-
-* ``target``: A specific software ptype or a mask to represent a group of software ptypes.
-
-* ``mask``: A flag indicate if "target" is a specific software ptype(=0) or a ptype mask(=1).
-
-* ``pkt_type``: The new software ptype to replace the old ones.
-
-Update hardware defined ptype to software defined packet type mapping table::
-
-   testpmd> ptype mapping update (port_id) (hw_ptype) (sw_ptype)
-
-where:
-
-* ``hw_ptype``: hardware ptype as the index of the ptype mapping table.
-
-* ``sw_ptype``: software ptype as the value of the ptype mapping table.
-
-Reset ptype mapping table::
-
-   testpmd> ptype mapping reset (port_id)
-
 config per port Rx offloading
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1775,7 +1553,7 @@ Enable or disable a per port Rx offloading on all Rx queues of a port::
 * ``offloading``: can be any of these offloading capability:
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
-                  header_split, vlan_filter, vlan_extend, jumbo_frame,
+                  vlan_filter, vlan_extend, jumbo_frame,
                   scatter, timestamp, security, keep_crc, rss_hash
 
 This command should be run when the port is stopped, or else it will fail.
@@ -1790,7 +1568,7 @@ Enable or disable a per queue Rx offloading only on a specific Rx queue::
 * ``offloading``: can be any of these offloading capability:
                   vlan_strip, ipv4_cksum, udp_cksum, tcp_cksum, tcp_lro,
                   qinq_strip, outer_ipv4_cksum, macsec_strip,
-                  header_split, vlan_filter, vlan_extend, jumbo_frame,
+                  vlan_filter, vlan_extend, jumbo_frame,
                   scatter, timestamp, security, keep_crc
 
 This command should be run when the port is stopped, or else it will fail.
@@ -2003,6 +1781,24 @@ Set fec mode for a specific port::
 
   testpmd> set port (port_id) fec_mode auto|off|rs|baser
 
+Config Sample actions list
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Configure the sample actions list to be used when sampling a packet by
+rte_flow_action_sample::
+
+ set sample_actions {index} {action} [/ {action} [...]] / end
+
+There are multiple global buffers for ``sample_actions``, this command will set
+one internal buffer index by ``{index}``.
+
+In order to use different sample actions list, ``index`` must be specified
+during the flow rule creation::
+
+ testpmd> flow create 0 ingress pattern eth / ipv4 / end actions
+        sample ratio 2 index 2 / end
+
+Otherwise the default index ``0`` is used.
 
 Port Functions
 --------------
@@ -2012,6 +1808,8 @@ The following sections show functions for configuring ports.
 .. note::
 
    Port configuration changes only become active when forwarding is started/restarted.
+
+.. _port_attach:
 
 port attach
 ~~~~~~~~~~~
@@ -2274,12 +2072,19 @@ port config - RSS
 ~~~~~~~~~~~~~~~~~
 
 Set the RSS (Receive Side Scaling) mode on or off::
-
-   testpmd> port config all rss (all|default|eth|vlan|ip|tcp|udp|sctp|ether|port|vxlan|geneve|nvgre|vxlan-gpe|l2tpv3|esp|ah|pfcp|ecpri|mpls|none)
+   testpmd> port config all rss (all|default|level-default|level-outer|level-inner| \
+                                 ip|tcp|udp|sctp|tunnel|vlan|none| \
+                                 ipv4|ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp|ipv4-other| \
+                                 ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp| \
+                                 ipv6-other|ipv6-ex|ipv6-tcp-ex|ipv6-udp-ex| \
+                                 l2-payload|port|vxlan|geneve|nvgre|gtpu|eth|s-vlan|c-vlan| \
+                                 esp|ah|l2tpv3|pfcp|pppoe|ecpri|mpls|ipv4-chksum|l4-chksum| \
+                                 l2tpv2|l3-pre96|l3-pre64|l3-pre56|l3-pre48|l3-pre40|l3-pre32| \
+                                 l2-dst-only|l2-src-only|l4-dst-only|l4-src-only|l3-dst-only|l3-src-only|<rsstype_id>)
 
 RSS is on by default.
 
-The ``all`` option is equivalent to eth|vlan|ip|tcp|udp|sctp|ether|l2tpv3|esp|ah|pfcp.
+The ``all`` option is equivalent to eth|vlan|ip|tcp|udp|sctp|ether|l2tpv3|esp|ah|pfcp|l2tpv2.
 
 The ``default`` option enables all supported RSS types reported by device info.
 
@@ -2420,6 +2225,15 @@ hash of input [IP] packets received on port::
                      ipv6-udp-ex <string of hex digits \
                      (variable length, NIC dependent)>)
 
+port cleanup txq mbufs
+~~~~~~~~~~~~~~~~~~~~~~
+
+To cleanup txq mbufs currently cached by driver::
+
+   testpmd> port cleanup (port_id) txq (queue_id) (free_cnt)
+
+If the value of ``free_cnt`` is 0, driver should free all cached mbufs.
+
 Device Functions
 ----------------
 
@@ -2467,217 +2281,7 @@ Link Bonding Functions
 The Link Bonding functions make it possible to dynamically create and
 manage link bonding devices from within testpmd interactive prompt.
 
-create bonded device
-~~~~~~~~~~~~~~~~~~~~
-
-Create a new bonding device::
-
-   testpmd> create bonded device (mode) (socket)
-
-For example, to create a bonded device in mode 1 on socket 0::
-
-   testpmd> create bonded device 1 0
-   created new bonded device (port X)
-
-add bonding slave
-~~~~~~~~~~~~~~~~~
-
-Adds Ethernet device to a Link Bonding device::
-
-   testpmd> add bonding slave (slave id) (port id)
-
-For example, to add Ethernet device (port 6) to a Link Bonding device (port 10)::
-
-   testpmd> add bonding slave 6 10
-
-
-remove bonding slave
-~~~~~~~~~~~~~~~~~~~~
-
-Removes an Ethernet slave device from a Link Bonding device::
-
-   testpmd> remove bonding slave (slave id) (port id)
-
-For example, to remove Ethernet slave device (port 6) to a Link Bonding device (port 10)::
-
-   testpmd> remove bonding slave 6 10
-
-set bonding mode
-~~~~~~~~~~~~~~~~
-
-Set the Link Bonding mode of a Link Bonding device::
-
-   testpmd> set bonding mode (value) (port id)
-
-For example, to set the bonding mode of a Link Bonding device (port 10) to broadcast (mode 3)::
-
-   testpmd> set bonding mode 3 10
-
-set bonding primary
-~~~~~~~~~~~~~~~~~~~
-
-Set an Ethernet slave device as the primary device on a Link Bonding device::
-
-   testpmd> set bonding primary (slave id) (port id)
-
-For example, to set the Ethernet slave device (port 6) as the primary port of a Link Bonding device (port 10)::
-
-   testpmd> set bonding primary 6 10
-
-set bonding mac
-~~~~~~~~~~~~~~~
-
-Set the MAC address of a Link Bonding device::
-
-   testpmd> set bonding mac (port id) (mac)
-
-For example, to set the MAC address of a Link Bonding device (port 10) to 00:00:00:00:00:01::
-
-   testpmd> set bonding mac 10 00:00:00:00:00:01
-
-set bonding balance_xmit_policy
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Set the transmission policy for a Link Bonding device when it is in Balance XOR mode::
-
-   testpmd> set bonding balance_xmit_policy (port_id) (l2|l23|l34)
-
-For example, set a Link Bonding device (port 10) to use a balance policy of layer 3+4 (IP addresses & UDP ports)::
-
-   testpmd> set bonding balance_xmit_policy 10 l34
-
-
-set bonding mon_period
-~~~~~~~~~~~~~~~~~~~~~~
-
-Set the link status monitoring polling period in milliseconds for a bonding device.
-
-This adds support for PMD slave devices which do not support link status interrupts.
-When the mon_period is set to a value greater than 0 then all PMD's which do not support
-link status ISR will be queried every polling interval to check if their link status has changed::
-
-   testpmd> set bonding mon_period (port_id) (value)
-
-For example, to set the link status monitoring polling period of bonded device (port 5) to 150ms::
-
-   testpmd> set bonding mon_period 5 150
-
-
-set bonding lacp dedicated_queue
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Enable dedicated tx/rx queues on bonding devices slaves to handle LACP control plane traffic
-when in mode 4 (link-aggregation-802.3ad)::
-
-   testpmd> set bonding lacp dedicated_queues (port_id) (enable|disable)
-
-
-set bonding agg_mode
-~~~~~~~~~~~~~~~~~~~~
-
-Enable one of the specific aggregators mode when in mode 4 (link-aggregation-802.3ad)::
-
-   testpmd> set bonding agg_mode (port_id) (bandwidth|count|stable)
-
-
-show bonding config
-~~~~~~~~~~~~~~~~~~~
-
-Show the current configuration of a Link Bonding device::
-
-   testpmd> show bonding config (port id)
-
-For example,
-to show the configuration a Link Bonding device (port 9) with 3 slave devices (1, 3, 4)
-in balance mode with a transmission policy of layer 2+3::
-
-   testpmd> show bonding config 9
-        Bonding mode: 2
-        Balance Xmit Policy: BALANCE_XMIT_POLICY_LAYER23
-        Slaves (3): [1 3 4]
-        Active Slaves (3): [1 3 4]
-        Primary: [3]
-
-
-Register Functions
-------------------
-
-The Register Functions can be used to read from and write to registers on the network card referenced by a port number.
-This is mainly useful for debugging purposes.
-Reference should be made to the appropriate datasheet for the network card for details on the register addresses
-and fields that can be accessed.
-
-read reg
-~~~~~~~~
-
-Display the value of a port register::
-
-   testpmd> read reg (port_id) (address)
-
-For example, to examine the Flow Director control register (FDIRCTL, 0x0000EE000) on an Intel 82599 10 GbE Controller::
-
-   testpmd> read reg 0 0xEE00
-   port 0 PCI register at offset 0xEE00: 0x4A060029 (1241907241)
-
-read regfield
-~~~~~~~~~~~~~
-
-Display a port register bit field::
-
-   testpmd> read regfield (port_id) (address) (bit_x) (bit_y)
-
-For example, reading the lowest two bits from the register in the example above::
-
-   testpmd> read regfield 0 0xEE00 0 1
-   port 0 PCI register at offset 0xEE00: bits[0, 1]=0x1 (1)
-
-read regbit
-~~~~~~~~~~~
-
-Display a single port register bit::
-
-   testpmd> read regbit (port_id) (address) (bit_x)
-
-For example, reading the lowest bit from the register in the example above::
-
-   testpmd> read regbit 0 0xEE00 0
-   port 0 PCI register at offset 0xEE00: bit 0=1
-
-write reg
-~~~~~~~~~
-
-Set the value of a port register::
-
-   testpmd> write reg (port_id) (address) (value)
-
-For example, to clear a register::
-
-   testpmd> write reg 0 0xEE00 0x0
-   port 0 PCI register at offset 0xEE00: 0x00000000 (0)
-
-write regfield
-~~~~~~~~~~~~~~
-
-Set bit field of a port register::
-
-   testpmd> write regfield (port_id) (address) (bit_x) (bit_y) (value)
-
-For example, writing to the register cleared in the example above::
-
-   testpmd> write regfield 0 0xEE00 0 1 2
-   port 0 PCI register at offset 0xEE00: 0x00000002 (2)
-
-write regbit
-~~~~~~~~~~~~
-
-Set single bit value of a port register::
-
-   testpmd> write regbit (port_id) (address) (bit_x) (value)
-
-For example, to set the high bit in the register from the example above::
-
-   testpmd> write regbit 0 0xEE00 31 1
-   port 0 PCI register at offset 0xEE00: 0x8000000A (2147483658)
+See :doc:`../prog_guide/link_bonding_poll_mode_drv_lib` for more information.
 
 Traffic Metering and Policing
 -----------------------------
@@ -2698,14 +2302,15 @@ add port meter profile (srTCM rfc2967)
 Add meter profile (srTCM rfc2697) to the ethernet device::
 
    testpmd> add port meter profile srtcm_rfc2697 (port_id) (profile_id) \
-   (cir) (cbs) (ebs)
+   (cir) (cbs) (ebs) (packet_mode)
 
 where:
 
 * ``profile_id``: ID for the meter profile.
-* ``cir``: Committed Information Rate (CIR) (bytes/second).
-* ``cbs``: Committed Burst Size (CBS) (bytes).
-* ``ebs``: Excess Burst Size (EBS) (bytes).
+* ``cir``: Committed Information Rate (CIR) (bytes per second or packets per second).
+* ``cbs``: Committed Burst Size (CBS) (bytes or packets).
+* ``ebs``: Excess Burst Size (EBS) (bytes or packets).
+* ``packet_mode``: Packets mode for meter profile.
 
 add port meter profile (trTCM rfc2968)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2713,15 +2318,16 @@ add port meter profile (trTCM rfc2968)
 Add meter profile (srTCM rfc2698) to the ethernet device::
 
    testpmd> add port meter profile trtcm_rfc2698 (port_id) (profile_id) \
-   (cir) (pir) (cbs) (pbs)
+   (cir) (pir) (cbs) (pbs) (packet_mode)
 
 where:
 
 * ``profile_id``: ID for the meter profile.
-* ``cir``: Committed information rate (bytes/second).
-* ``pir``: Peak information rate (bytes/second).
-* ``cbs``: Committed burst size (bytes).
-* ``pbs``: Peak burst size (bytes).
+* ``cir``: Committed information rate (bytes per second or packets per second).
+* ``pir``: Peak information rate (bytes per second or packets per second).
+* ``cbs``: Committed burst size (bytes or packets).
+* ``pbs``: Peak burst size (bytes or packets).
+* ``packet_mode``: Packets mode for meter profile.
 
 add port meter profile (trTCM rfc4115)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2729,15 +2335,16 @@ add port meter profile (trTCM rfc4115)
 Add meter profile (trTCM rfc4115) to the ethernet device::
 
    testpmd> add port meter profile trtcm_rfc4115 (port_id) (profile_id) \
-   (cir) (eir) (cbs) (ebs)
+   (cir) (eir) (cbs) (ebs) (packet_mode)
 
 where:
 
 * ``profile_id``: ID for the meter profile.
-* ``cir``: Committed information rate (bytes/second).
-* ``eir``: Excess information rate (bytes/second).
-* ``cbs``: Committed burst size (bytes).
-* ``ebs``: Excess burst size (bytes).
+* ``cir``: Committed information rate (bytes per second or packets per second).
+* ``eir``: Excess information rate (bytes per second or packets per second).
+* ``cbs``: Committed burst size (bytes or packets).
+* ``ebs``: Excess burst size (bytes or packets).
+* ``packet_mode``: Packets mode for meter profile.
 
 delete port meter profile
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2746,35 +2353,63 @@ Delete meter profile from the ethernet device::
 
    testpmd> del port meter profile (port_id) (profile_id)
 
+create port policy
+~~~~~~~~~~~~~~~~~~
+
+Create new policy object for the ethernet device::
+
+   testpmd> add port meter policy (port_id) (policy_id) g_actions \
+   {action} y_actions {action} r_actions {action}
+
+where:
+
+* ``policy_id``: policy ID.
+* ``action``: action lists for green/yellow/red colors.
+
+delete port policy
+~~~~~~~~~~~~~~~~~~
+
+Delete policy object for the ethernet device::
+
+   testpmd> del port meter policy (port_id) (policy_id)
+
+where:
+
+* ``policy_id``: policy ID.
+
 create port meter
 ~~~~~~~~~~~~~~~~~
 
 Create new meter object for the ethernet device::
 
    testpmd> create port meter (port_id) (mtr_id) (profile_id) \
-   (meter_enable) (g_action) (y_action) (r_action) (stats_mask) (shared) \
+   (policy_id) (meter_enable) (stats_mask) (shared) (default_input_color) \
    (use_pre_meter_color) [(dscp_tbl_entry0) (dscp_tbl_entry1)...\
-   (dscp_tbl_entry63)]
+   (dscp_tbl_entry63)] [(vlan_tbl_entry0) (vlan_tbl_entry1) ... \
+   (vlan_tbl_entry15)]
 
 where:
 
 * ``mtr_id``: meter object ID.
 * ``profile_id``: ID for the meter profile.
+* ``policy_id``: ID for the policy.
 * ``meter_enable``: When this parameter has a non-zero value, the meter object
   gets enabled at the time of creation, otherwise remains disabled.
-* ``g_action``: Policer action for the packet with green color.
-* ``y_action``: Policer action for the packet with yellow color.
-* ``r_action``: Policer action for the packet with red color.
 * ``stats_mask``: Mask of statistics counter types to be enabled for the
   meter object.
 * ``shared``:  When this parameter has a non-zero value, the meter object is
   shared by multiple flows. Otherwise, meter object is used by single flow.
+* ``default_input_color``:  Default input color for incoming packets.
+  If incoming packet misses DSCP or VLAN input color table then it will be used
+  as input color.
 * ``use_pre_meter_color``: When this parameter has a non-zero value, the
   input color for the current meter object is determined by the latest meter
   object in the same flow. Otherwise, the current meter object uses the
   *dscp_table* to determine the input color.
 * ``dscp_tbl_entryx``: DSCP table entry x providing meter providing input
   color, 0 <= x <= 63.
+* ``vlan_tbl_entryx``: VLAN table entry x providing meter input color,
+  0 <= x <= 15.
 
 enable port meter
 ~~~~~~~~~~~~~~~~~
@@ -2809,26 +2444,33 @@ set port meter dscp table
 
 Set meter dscp table for the ethernet device::
 
-   testpmd> set port meter dscp table (port_id) (mtr_id) [(dscp_tbl_entry0) \
-   (dscp_tbl_entry1)...(dscp_tbl_entry63)]
+   testpmd> set port meter dscp table (port_id) (mtr_id) (proto) \
+   [(dscp_tbl_entry0) (dscp_tbl_entry1)...(dscp_tbl_entry63)]
 
-set port meter policer action
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+set port meter vlan table
+~~~~~~~~~~~~~~~~~~~~~~~~~
+Set meter VLAN table for the Ethernet device::
 
-Set meter policer action for the ethernet device::
+   testpmd> set port meter vlan table (port_id) (mtr_id) (proto) \
+   [(vlan_tbl_entry0) (vlan_tbl_entry1)...(vlan_tbl_entry15)]
 
-   testpmd> set port meter policer action (port_id) (mtr_id) (action_mask) \
-   (action0) [(action1) (action1)]
+set port meter protocol
+~~~~~~~~~~~~~~~~~~~~~~~
+Set meter protocol and corresponding priority::
 
-where:
+   testpmd> set port meter proto (port_id) (mtr_id) (proto) (prio)
 
-* ``action_mask``: Bit mask indicating which policer actions need to be
-  updated. One or more policer actions can be updated in a single function
-  invocation. To update the policer action associated with color C, bit
-  (1 << C) needs to be set in *action_mask* and element at position C
-  in the *actions* array needs to be valid.
-* ``actionx``: Policer action for the color x,
-  RTE_MTR_GREEN <= x < RTE_MTR_COLORS
+get port meter protocol
+~~~~~~~~~~~~~~~~~~~~~~~
+Get meter protocol::
+
+   testpmd> get port meter proto (port_id) (mtr_id)
+
+get port meter protocol priority
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Get priority associated to meter protocol::
+
+   testpmd> get port meter proto_prio (port_id) (mtr_id) (proto)
 
 set port meter stats mask
 ~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3209,52 +2851,14 @@ This section details the available filter functions that are available.
 Note these functions interface the deprecated legacy filtering framework,
 superseded by *rte_flow*. See `Flow rules management`_.
 
-.. _testpmd_flow_director:
-
-flow_director_mask
-~~~~~~~~~~~~~~~~~~
-
-Set flow director's input masks::
-
-   flow_director_mask (port_id) mode IP vlan (vlan_value) \
-                      src_mask (ipv4_src) (ipv6_src) (src_port) \
-                      dst_mask (ipv4_dst) (ipv6_dst) (dst_port)
-
-   flow_director_mask (port_id) mode MAC-VLAN vlan (vlan_value)
-
-   flow_director_mask (port_id) mode Tunnel vlan (vlan_value) \
-                      mac (mac_value) tunnel-type (tunnel_type_value) \
-                      tunnel-id (tunnel_id_value)
-
-Example, to set flow director mask on port 0::
-
-   testpmd> flow_director_mask 0 mode IP vlan 0xefff \
-            src_mask 255.255.255.255 \
-                FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF 0xFFFF \
-            dst_mask 255.255.255.255 \
-                FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF 0xFFFF
-
-flow_director_flex_payload
-~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Configure flexible payload selection::
-
-   flow_director_flex_payload (port_id) (raw|l2|l3|l4) (config)
-
-For example, to select the first 16 bytes from the offset 4 (bytes) of packet's payload as flexible payload::
-
-   testpmd> flow_director_flex_payload 0 l4 \
-            (4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19)
-
-
 .. _testpmd_rte_flow:
 
 Flow rules management
 ---------------------
 
 Control of the generic flow API (*rte_flow*) is fully exposed through the
-``flow`` command (validation, creation, destruction, queries and operation
-modes).
+``flow`` command (configuration, validation, creation, destruction, queries
+and operation modes).
 
 Considering *rte_flow* overlaps with all `Filter Functions`_, using both
 features simultaneously may cause undefined side-effects and is therefore
@@ -3277,12 +2881,79 @@ The first parameter stands for the operation mode. Possible operations and
 their general syntax are described below. They are covered in detail in the
 following sections.
 
+- Get info about flow engine::
+
+   flow info {port_id}
+
+- Configure flow engine::
+
+   flow configure {port_id}
+       [queues_number {number}] [queues_size {size}]
+       [counters_number {number}]
+       [aging_counters_number {number}]
+       [meters_number {number}]
+
+- Create a pattern template::
+   flow pattern_template {port_id} create [pattern_template_id {id}]
+       [relaxed {boolean}] [ingress] [egress] [transfer]
+	   template {item} [/ {item} [...]] / end
+
+- Destroy a pattern template::
+
+   flow pattern_template {port_id} destroy pattern_template {id} [...]
+
+- Create an actions template::
+
+   flow actions_template {port_id} create [actions_template_id {id}]
+       [ingress] [egress] [transfer]
+       template {action} [/ {action} [...]] / end
+       mask {action} [/ {action} [...]] / end
+
+- Destroy an actions template::
+
+   flow actions_template {port_id} destroy actions_template {id} [...]
+
+- Create a table::
+
+   flow table {port_id} create
+       [table_id {id}]
+       [group {group_id}] [priority {level}] [ingress] [egress] [transfer]
+       rules_number {number}
+       pattern_template {pattern_template_id}
+       actions_template {actions_template_id}
+
+- Destroy a table::
+
+   flow table {port_id} destroy table {id} [...]
+
 - Check whether a flow rule can be created::
 
    flow validate {port_id}
        [group {group_id}] [priority {level}] [ingress] [egress] [transfer]
        pattern {item} [/ {item} [...]] / end
        actions {action} [/ {action} [...]] / end
+
+- Enqueue creation of a flow rule::
+
+   flow queue {port_id} create {queue_id}
+       [postpone {boolean}] template_table {table_id}
+       pattern_template {pattern_template_index}
+       actions_template {actions_template_index}
+       pattern {item} [/ {item} [...]] / end
+       actions {action} [/ {action} [...]] / end
+
+- Enqueue destruction of specific flow rules::
+
+   flow queue {port_id} destroy {queue_id}
+       [postpone {boolean}] rule {rule_id} [...]
+
+- Push enqueued operations::
+
+   flow push {port_id} queue {queue_id}
+
+- Pull all operations results from a queue::
+
+   flow pull {port_id} queue {queue_id}
 
 - Create a flow rule::
 
@@ -3314,7 +2985,11 @@ following sections.
 
 - Dump internal representation information of all flows in hardware::
 
-   flow dump {port_id} {output_file}
+   flow dump {port_id} all {output_file}
+
+  for one flow::
+
+   flow dump {port_id} rule {rule_id} {output_file}
 
 - List and destroy aged flow rules::
 
@@ -3331,6 +3006,206 @@ following sections.
 - Tunnel offload - list port tunnel stubs::
 
    flow tunnel list {port_id}
+
+Retrieving info about flow management engine
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow info`` retrieves info on pre-configurable resources in the underlying
+device to give a hint of possible values for flow engine configuration.
+
+``rte_flow_info_get()``::
+
+   flow info {port_id}
+
+If successful, it will show::
+
+   Flow engine resources on port #[...]:
+   Number of queues: #[...]
+   Size of queues: #[...]
+   Number of counters: #[...]
+   Number of aging objects: #[...]
+   Number of meters: #[...]
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+Configuring flow management engine
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow configure`` pre-allocates all the needed resources in the underlying
+device to be used later at the flow creation. Flow queues are allocated as well
+for asynchronous flow creation/destruction operations. It is bound to
+``rte_flow_configure()``::
+
+   flow configure {port_id}
+       [queues_number {number}] [queues_size {size}]
+       [counters_number {number}]
+       [aging_counters_number {number}]
+       [meters_number {number}]
+
+If successful, it will show::
+
+   Configure flows on port #[...]: number of queues #[...] with #[...] elements
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+Creating pattern templates
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow pattern_template create`` creates the specified pattern template.
+It is bound to ``rte_flow_pattern_template_create()``::
+
+   flow pattern_template {port_id} create [pattern_template_id {id}]
+       [relaxed {boolean}] [ingress] [egress] [transfer]
+	   template {item} [/ {item} [...]] / end
+
+If successful, it will show::
+
+   Pattern template #[...] created
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+This command uses the same pattern items as ``flow create``,
+their format is described in `Creating flow rules`_.
+
+Destroying pattern templates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow pattern_template destroy`` destroys one or more pattern templates
+from their template ID (as returned by ``flow pattern_template create``),
+this command calls ``rte_flow_pattern_template_destroy()`` as many
+times as necessary::
+
+   flow pattern_template {port_id} destroy pattern_template {id} [...]
+
+If successful, it will show::
+
+   Pattern template #[...] destroyed
+
+It does not report anything for pattern template IDs that do not exist.
+The usual error message is shown when a pattern template cannot be destroyed::
+
+   Caught error type [...] ([...]): [...]
+
+Creating actions templates
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow actions_template create`` creates the specified actions template.
+It is bound to ``rte_flow_actions_template_create()``::
+
+   flow actions_template {port_id} create [actions_template_id {id}]
+       [ingress] [egress] [transfer]
+	   template {action} [/ {action} [...]] / end
+       mask {action} [/ {action} [...]] / end
+
+If successful, it will show::
+
+   Actions template #[...] created
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+This command uses the same actions as ``flow create``,
+their format is described in `Creating flow rules`_.
+
+Destroying actions templates
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow actions_template destroy`` destroys one or more actions templates
+from their template ID (as returned by ``flow actions_template create``),
+this command calls ``rte_flow_actions_template_destroy()`` as many
+times as necessary::
+
+   flow actions_template {port_id} destroy actions_template {id} [...]
+
+If successful, it will show::
+
+   Actions template #[...] destroyed
+
+It does not report anything for actions template IDs that do not exist.
+The usual error message is shown when an actions template cannot be destroyed::
+
+   Caught error type [...] ([...]): [...]
+
+Creating template table
+~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow template_table create`` creates the specified template table.
+It is bound to ``rte_flow_template_table_create()``::
+
+   flow template_table {port_id} create
+       [table_id {id}] [group {group_id}]
+       [priority {level}] [ingress] [egress] [transfer]
+       rules_number {number}
+       pattern_template {pattern_template_id}
+       actions_template {actions_template_id}
+
+If successful, it will show::
+
+   Template table #[...] created
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+Destroying flow table
+~~~~~~~~~~~~~~~~~~~~~
+
+``flow template_table destroy`` destroys one or more template tables
+from their table ID (as returned by ``flow template_table create``),
+this command calls ``rte_flow_template_table_destroy()`` as many
+times as necessary::
+
+   flow template_table {port_id} destroy table {id} [...]
+
+If successful, it will show::
+
+   Template table #[...] destroyed
+
+It does not report anything for table IDs that do not exist.
+The usual error message is shown when a table cannot be destroyed::
+
+   Caught error type [...] ([...]): [...]
+
+Pushing enqueued operations
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow push`` pushes all the outstanding enqueued operations
+to the underlying device immediately.
+It is bound to ``rte_flow_push()``::
+
+   flow push {port_id} queue {queue_id}
+
+If successful, it will show::
+
+   Queue #[...] operations pushed
+
+The usual error message is shown when operations cannot be pushed::
+
+   Caught error type [...] ([...]): [...]
+
+Pulling flow operations results
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow pull`` asks the underlying device about flow queue operations
+results and return all the processed (successfully or not) operations.
+It is bound to ``rte_flow_pull()``::
+
+   flow pull {port_id} queue {queue_id}
+
+If successful, it will show::
+
+   Queue #[...] pulled #[...] operations (#[...] failed, #[...] succeeded)
+
+The usual error message is shown when operations results cannot be pulled::
+
+   Caught error type [...] ([...]): [...]
 
 Creating a tunnel stub for offload
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -3438,6 +3313,32 @@ one.
 
 **All unspecified object values are automatically initialized to 0.**
 
+Enqueueing creation of flow rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow queue create`` adds creation operation of a flow rule to a queue.
+It is bound to ``rte_flow_async_create()``::
+
+   flow queue {port_id} create {queue_id}
+       [postpone {boolean}] template_table {table_id}
+       pattern_template {pattern_template_index}
+       actions_template {actions_template_index}
+       pattern {item} [/ {item} [...]] / end
+       actions {action} [/ {action} [...]] / end
+
+If successful, it will return a flow rule ID usable with other commands::
+
+   Flow rule #[...] creaion enqueued
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+This command uses the same pattern items and actions as ``flow create``,
+their format is described in `Creating flow rules`_.
+
+``flow queue pull`` must be called to retrieve the operation status.
+
 Attributes
 ^^^^^^^^^^
 
@@ -3449,6 +3350,10 @@ specified before the ``pattern`` token.
 - ``ingress``: rule applies to ingress traffic.
 - ``egress``: rule applies to egress traffic.
 - ``transfer``: apply rule directly to endpoints found in pattern.
+
+Please note that use of ``transfer`` attribute requires that the flow and
+its indirect components be managed via so-called ``transfer`` proxy port.
+See `show flow transfer proxy port ID for the given port`_ for details.
 
 Each instance of an attribute specified several times overrides the previous
 value as shown below (group 4 is used)::
@@ -3470,7 +3375,7 @@ Tunnel offload
 Indicate tunnel offload rule type
 
 - ``tunnel_set {tunnel_id}``: mark rule as tunnel offload decap_set type.
-- ``tunnel_match {tunnel_id}``:  mark rule as tunel offload match type.
+- ``tunnel_match {tunnel_id}``:  mark rule as tunnel offload match type.
 
 Matching pattern
 ^^^^^^^^^^^^^^^^
@@ -3569,16 +3474,6 @@ This section lists supported pattern items and their attributes, if any.
 
   - ``num {unsigned}``: number of layers covered.
 
-- ``pf``: match traffic from/to the physical function.
-
-- ``vf``: match traffic from/to a virtual function ID.
-
-  - ``id {unsigned}``: VF ID.
-
-- ``phy_port``: match traffic from/to a specific physical port.
-
-  - ``index {unsigned}``: physical port index.
-
 - ``port_id``: match traffic from/to a given DPDK port ID.
 
   - ``id {unsigned}``: DPDK port ID.
@@ -3594,6 +3489,7 @@ This section lists supported pattern items and their attributes, if any.
   - ``offset {integer}``: absolute or relative offset for pattern.
   - ``limit {unsigned}``: search area limit for start of pattern.
   - ``pattern {string}``: byte string to look for.
+  - ``pattern_hex {string}``: byte string (provided in hexadecimal) to look for.
 
 - ``eth``: match Ethernet header.
 
@@ -3611,6 +3507,7 @@ This section lists supported pattern items and their attributes, if any.
 
 - ``ipv4``: match IPv4 header.
 
+  - ``version_ihl {unsigned}``: IPv4 version and IP header length.
   - ``tos {unsigned}``: type of service.
   - ``ttl {unsigned}``: time to live.
   - ``proto {unsigned}``: next protocol ID.
@@ -3651,6 +3548,7 @@ This section lists supported pattern items and their attributes, if any.
 - ``vxlan``: match VXLAN header.
 
   - ``vni {unsigned}``: VXLAN identifier.
+  - ``last_rsvd {unsigned}``: VXLAN last reserved 8-bits.
 
 - ``e_tag``: match IEEE 802.1BR E-Tag header.
 
@@ -3671,6 +3569,12 @@ This section lists supported pattern items and their attributes, if any.
 - ``gre_key``: match GRE optional key field.
 
   - ``value {unsigned}``: key value.
+
+- ``gre_option``: match GRE optional fields(checksum/key/sequence).
+
+  - ``checksum {unsigned}``: checksum value.
+  - ``key {unsigned}``: key value.
+  - ``sequence {unsigned}``: sequence number value.
 
 - ``fuzzy``: fuzzy pattern match, expect faster than default.
 
@@ -3742,6 +3646,7 @@ This section lists supported pattern items and their attributes, if any.
 - ``gtp_psc``: match GTP PDU extension header with type 0x85.
 
   - ``pdu_type {unsigned}``: PDU type.
+
   - ``qfi {unsigned}``: QoS flow identifier.
 
 - ``pppoes``, ``pppoed``: match PPPoE header.
@@ -3764,6 +3669,46 @@ This section lists supported pattern items and their attributes, if any.
 
   - ``s_field {unsigned}``: S field.
   - ``seid {unsigned}``: session endpoint identifier.
+
+- ``integrity``: match packet integrity.
+
+   - ``level {unsigned}``: Packet encapsulation level the item should
+     apply to. See rte_flow_action_rss for details.
+   - ``value {unsigned}``: A bitmask that specify what packet elements
+     must be matched for integrity.
+
+- ``conntrack``: match conntrack state.
+
+- ``port_representor``: match traffic entering the embedded switch from the given ethdev
+
+  - ``port_id {unsigned}``: ethdev port ID
+
+- ``represented_port``: match traffic entering the embedded switch from
+  the entity represented by the given ethdev
+
+  - ``ethdev_port_id {unsigned}``: ethdev port ID
+
+- ``l2tpv2``: match L2TPv2 header.
+
+  - ``length {unsigned}``: L2TPv2 option length.
+  - ``tunnel_id {unsigned}``: L2TPv2 tunnel identifier.
+  - ``session_id {unsigned}``: L2TPv2 session identifier.
+  - ``ns {unsigned}``: L2TPv2 option ns.
+  - ``nr {unsigned}``: L2TPv2 option nr.
+  - ``offset_size {unsigned}``: L2TPv2 option offset.
+
+- ``ppp``: match PPP header.
+
+  - ``addr {unsigned}``: PPP address.
+  - ``ctrl {unsigned}``: PPP control.
+  - ``proto_id {unsigned}``: PPP protocol identifier.
+
+- ``meter``: match meter color.
+
+  - ``color {value}``: meter color value (green/yellow/red).
+
+- ``send_to_kernel``: send packets to kernel.
+
 
 Actions list
 ^^^^^^^^^^^^
@@ -3884,11 +3829,6 @@ This section lists supported actions and their attributes, if any.
 
   - ``original {boolean}``: use original VF ID if possible.
   - ``id {unsigned}``: VF ID.
-
-- ``phy_port``: direct packets to physical port index.
-
-  - ``original {boolean}``: use original port index if possible.
-  - ``index {unsigned}``: physical port index.
 
 - ``port_id``: direct matching traffic to a given DPDK port ID.
 
@@ -4031,10 +3971,32 @@ This section lists supported actions and their attributes, if any.
 
   - ``dscp_value {unsigned}``: The new DSCP value to be set
 
-- ``shared``: Use shared action created via
-  ``flow shared_action {port_id} create``
+- ``indirect``: Use indirect action created via
+  ``flow indirect_action {port_id} create``
 
-  - ``shared_action_id {unsigned}``: Shared action ID to use
+  - ``indirect_action_id {unsigned}``: Indirect action ID to use
+
+- ``color``: Color the packet to reflect the meter color result
+
+  - ``type {value}``: Set color type with specified value(green/yellow/red)
+
+- ``port_representor``: at embedded switch level, send matching traffic to
+  the given ethdev
+
+  - ``port_id {unsigned}``: ethdev port ID
+
+- ``represented_port``: at embedded switch level, send matching traffic to
+  the entity represented by the given ethdev
+
+  - ``ethdev_port_id {unsigned}``: ethdev port ID
+
+- ``meter_mark``:  meter the directed packets using profile and policy
+
+  - ``mtr_profile {unsigned}``: meter profile ID to use
+  - ``mtr_policy {unsigned}``: meter policy ID to use
+  - ``mtr_color_mode {unsigned}``: meter color-awareness mode (blind/aware)
+  - ``mtr_init_color {value}``: initial color value (green/yellow/red)
+  - ``mtr_state {unsigned}``: meter state (disabled/enabled)
 
 Destroying flow rules
 ~~~~~~~~~~~~~~~~~~~~~
@@ -4098,6 +4060,27 @@ Non-existent rule IDs are ignored::
    testpmd> flow destroy 0 rule 0
    Flow rule #0 destroyed
    testpmd>
+
+Enqueueing destruction of flow rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow queue destroy`` adds destruction operations to destroy one or more rules
+from their rule ID (as returned by ``flow queue create``) to a queue,
+this command calls ``rte_flow_async_destroy()`` as many times as necessary::
+
+   flow queue {port_id} destroy {queue_id}
+        [postpone {boolean}] rule {rule_id} [...]
+
+If successful, it will show::
+
+   Flow rule #[...] destruction enqueued
+
+It does not report anything for rule IDs that do not exist. The usual error
+message is shown when a rule cannot be destroyed::
+
+   Caught error type [...] ([...]): [...]
+
+``flow queue pull`` must be called to retrieve the operation status.
 
 Querying flow rules
 ~~~~~~~~~~~~~~~~~~~
@@ -4325,113 +4308,201 @@ If attach ``destroy`` parameter, the command will destroy all the list aged flow
    testpmd> flow aged 0
    Port 0 total aged flows: 0
 
-Creating shared actions
-~~~~~~~~~~~~~~~~~~~~~~~
-``flow shared_action {port_id} create`` creates shared action with optional
-shared action ID. It is bound to ``rte_flow_shared_action_create()``::
+Creating indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   flow shared_action {port_id} create [action_id {shared_action_id}]
+``flow indirect_action {port_id} create`` creates indirect action with optional
+indirect action ID. It is bound to ``rte_flow_action_handle_create()``::
+
+   flow indirect_action {port_id} create [action_id {indirect_action_id}]
       [ingress] [egress] [transfer] action {action} / end
 
 If successful, it will show::
 
-   Shared action #[...] created
+   Indirect action #[...] created
 
-Otherwise, it will complain either that shared action already exists or that
+Otherwise, it will complain either that indirect action already exists or that
 some error occurred::
 
-   Shared action #[...] is already assigned, delete it first
+   Indirect action #[...] is already assigned, delete it first
 
 ::
 
    Caught error type [...] ([...]): [...]
 
-Create shared rss action with id 100 to queues 1 and 2 on port 0::
+Create indirect rss action with id 100 to queues 1 and 2 on port 0::
 
-   testpmd> flow shared_action 0 create action_id 100 \
+   testpmd> flow indirect_action 0 create action_id 100 \
       ingress action rss queues 1 2 end / end
 
-Create shared rss action with id assigned by testpmd to queues 1 and 2 on
+Create indirect rss action with id assigned by testpmd to queues 1 and 2 on
 port 0::
 
-	testpmd> flow shared_action 0 create action_id \
+	testpmd> flow indirect_action 0 create action_id \
 		ingress action rss queues 0 1 end / end
 
-Updating shared actions
-~~~~~~~~~~~~~~~~~~~~~~~
-``flow shared_action {port_id} update`` updates configuration of the shared
-action from its shared action ID (as returned by
-``flow shared_action {port_id} create``). It is bound to
-``rte_flow_shared_action_update()``::
+Enqueueing creation of indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   flow shared_action {port_id} update {shared_action_id}
+``flow queue indirect_action create`` adds creation operation of an indirect
+action to a queue. It is bound to ``rte_flow_async_action_handle_create()``::
+
+   flow queue {port_id} create {queue_id} [postpone {boolean}]
+       table {table_id} item_template {item_template_id}
+       action_template {action_template_id}
+       pattern {item} [/ {item} [...]] / end
+       actions {action} [/ {action} [...]] / end
+
+If successful, it will show::
+
+   Indirect action #[...] creation queued
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+This command uses the same parameters as  ``flow indirect_action create``,
+described in `Creating indirect actions`_.
+
+``flow queue pull`` must be called to retrieve the operation status.
+
+Updating indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow indirect_action {port_id} update`` updates configuration of the indirect
+action from its indirect action ID (as returned by
+``flow indirect_action {port_id} create``). It is bound to
+``rte_flow_action_handle_update()``::
+
+   flow indirect_action {port_id} update {indirect_action_id}
       action {action} / end
 
 If successful, it will show::
 
-   Shared action #[...] updated
+   Indirect action #[...] updated
 
-Otherwise, it will complain either that shared action not found or that some
+Otherwise, it will complain either that indirect action not found or that some
 error occurred::
 
-   Failed to find shared action #[...] on port [...]
+   Failed to find indirect action #[...] on port [...]
 
 ::
 
    Caught error type [...] ([...]): [...]
 
-Update shared rss action having id 100 on port 0 with rss to queues 0 and 3
+Update indirect rss action having id 100 on port 0 with rss to queues 0 and 3
 (in create example above rss queues were 1 and 2)::
 
-   testpmd> flow shared_action 0 update 100 action rss queues 0 3 end / end
+   testpmd> flow indirect_action 0 update 100 action rss queues 0 3 end / end
 
-Destroying shared actions
-~~~~~~~~~~~~~~~~~~~~~~~~~
-``flow shared_action {port_id} update`` destroys one or more shared actions
-from their shared action IDs (as returned by
-``flow shared_action {port_id} create``). It is bound to
-``rte_flow_shared_action_destroy()``::
+Enqueueing update of indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-   flow shared_action {port_id} destroy action_id {shared_action_id} [...]
+``flow queue indirect_action update`` adds update operation for an indirect
+action to a queue. It is bound to ``rte_flow_async_action_handle_update()``::
+
+   flow queue {port_id} indirect_action {queue_id} update
+      {indirect_action_id} [postpone {boolean}] action {action} / end
 
 If successful, it will show::
 
-   Shared action #[...] destroyed
+   Indirect action #[...] update queued
 
-It does not report anything for shared action IDs that do not exist.
-The usual error message is shown when a shared action cannot be destroyed::
+Otherwise it will show an error message of the form::
 
    Caught error type [...] ([...]): [...]
 
-Destroy shared actions having id 100 & 101::
+``flow queue pull`` must be called to retrieve the operation status.
 
-   testpmd> flow shared_action 0 destroy action_id 100 action_id 101
+Destroying indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Query shared actions
-~~~~~~~~~~~~~~~~~~~~
-``flow shared_action {port_id} query`` queries the shared action from its
-shared action ID (as returned by ``flow shared_action {port_id} create``).
-It is bound to ``rte_flow_shared_action_query()``::
+``flow indirect_action {port_id} destroy`` destroys one or more indirect actions
+from their indirect action IDs (as returned by
+``flow indirect_action {port_id} create``). It is bound to
+``rte_flow_action_handle_destroy()``::
 
-  flow shared_action {port_id} query {shared_action_id}
+   flow indirect_action {port_id} destroy action_id {indirect_action_id} [...]
 
-Currently only rss shared action supported. If successful, it will show::
+If successful, it will show::
 
-   Shared RSS action:
+   Indirect action #[...] destroyed
+
+It does not report anything for indirect action IDs that do not exist.
+The usual error message is shown when a indirect action cannot be destroyed::
+
+   Caught error type [...] ([...]): [...]
+
+Destroy indirect actions having id 100 & 101::
+
+   testpmd> flow indirect_action 0 destroy action_id 100 action_id 101
+
+Enqueueing destruction of indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow queue indirect_action destroy`` adds destruction operation to destroy
+one or more indirect actions from their indirect action IDs (as returned by
+``flow queue {port_id} indirect_action {queue_id} create``) to a queue.
+It is bound to ``rte_flow_async_action_handle_destroy()``::
+
+   flow queue {port_id} indirect_action {queue_id} destroy
+      [postpone {boolean}] action_id {indirect_action_id} [...]
+
+If successful, it will show::
+
+   Indirect action #[...] destruction queued
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+``flow queue pull`` must be called to retrieve the operation status.
+
+Query indirect actions
+~~~~~~~~~~~~~~~~~~~~~~
+
+``flow indirect_action {port_id} query`` queries the indirect action from its
+indirect action ID (as returned by ``flow indirect_action {port_id} create``).
+It is bound to ``rte_flow_action_handle_query()``::
+
+  flow indirect_action {port_id} query {indirect_action_id}
+
+Currently only rss indirect action supported. If successful, it will show::
+
+   Indirect RSS action:
       refs:[...]
 
-Otherwise, it will complain either that shared action not found or that some
+Otherwise, it will complain either that indirect action not found or that some
 error occurred::
 
-   Failed to find shared action #[...] on port [...]
+   Failed to find indirect action #[...] on port [...]
 
 ::
 
    Caught error type [...] ([...]): [...]
 
-Query shared action having id 100::
+Query indirect action having id 100::
 
-   testpmd> flow shared_action 0 query 100
+   testpmd> flow indirect_action 0 query 100
+
+Enqueueing query of indirect actions
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``flow queue indirect_action query`` adds query operation for an indirect
+action to a queue. It is bound to ``rte_flow_async_action_handle_query()``::
+
+   flow queue {port_id} indirect_action {queue_id} query
+      {indirect_action_id} [postpone {boolean}]
+
+If successful, it will show::
+
+   Indirect action #[...] query queued
+
+Otherwise it will show an error message of the form::
+
+   Caught error type [...] ([...]): [...]
+
+``flow queue pull`` must be called to retrieve the operation status.
 
 Sample QinQ flow rules
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -4779,7 +4850,7 @@ Sample Raw encapsulation rule
 
 Raw encapsulation configuration can be set by the following commands
 
-Eecapsulating VxLAN::
+Encapsulating VxLAN::
 
  testpmd> set raw_encap 4 eth src is 10:11:22:33:44:55 / vlan tci is 1
         inner_type is 0x0800 / ipv4 / udp dst is 4789 / vxlan vni
@@ -4841,6 +4912,164 @@ if seid is set)::
  testpmd> flow create 0 ingress pattern eth / ipv6 / pfcp s_field is 1
         seid is 1 / end actions queue index 3 / end
 
+Sample Sampling/Mirroring rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Sample/Mirroring rules can be set by the following commands
+
+NIC-RX Sampling rule, the matched ingress packets and sent to the queue 1,
+and 50% packets are duplicated and marked with 0x1234 and sent to queue 0.
+
+::
+
+ testpmd> set sample_actions 0 mark id  0x1234 / queue index 0 / end
+ testpmd> flow create 0 ingress group 1 pattern eth / end actions
+        sample ratio 2 index 0 / queue index 1 / end
+
+Match packets coming from a VM which is referred to by means of
+its representor ethdev (port 1), mirror 50% of them to the
+said representor (for bookkeeping) as well as encapsulate
+all the packets and steer them to the physical port:
+
+::
+
+   testpmd> set sample_actions 0 port_representor ethdev_port_id 1 / end
+
+   testpmd> set vxlan ip-version ipv4 vni 4 udp-src 32 udp-dst 4789 ip-src 127.0.0.1
+      ip-dst 127.0.0.2 eth-src 11:11:11:11:11:11 eth-dst 22:22:22:22:22:22
+
+   testpmd> flow create 0 transfer pattern represented_port ethdev_port_id is 1 / end
+      actions sample ratio 2 index 0 / vxlan_encap /
+      represented_port ethdev_port_id 0 / end
+
+The rule is inserted via port 0 (assumed to have "transfer" privilege).
+
+Sample integrity rules
+~~~~~~~~~~~~~~~~~~~~~~
+
+Integrity rules can be created by the following commands:
+
+Integrity rule that forwards valid TCP packets to group 1.
+TCP packet integrity is matched with the ``l4_ok`` bit 3.
+
+::
+
+ testpmd> flow create 0 ingress
+            pattern eth / ipv4 / tcp / integrity value mask 8 value spec 8 / end
+            actions jump group 1 / end
+
+Integrity rule that forwards invalid packets to application.
+General packet integrity is matched with the ``packet_ok`` bit 0.
+
+::
+
+ testpmd> flow create 0 ingress pattern integrity value mask 1 value spec 0 / end actions queue index 0 / end
+
+Sample conntrack rules
+~~~~~~~~~~~~~~~~~~~~~~
+
+Conntrack rules can be set by the following commands
+
+Need to construct the connection context with provided information.
+In the first table, create a flow rule by using conntrack action and jump to
+the next table. In the next table, create a rule to check the state.
+
+::
+
+ testpmd> set conntrack com peer 1 is_orig 1 enable 1 live 1 sack 1 cack 0
+        last_dir 0 liberal 0 state 1 max_ack_win 7 r_lim 5 last_win 510
+        last_seq 2632987379 last_ack 2532480967 last_end 2632987379
+        last_index 0x8
+ testpmd> set conntrack orig scale 7 fin 0 acked 1 unack_data 0
+        sent_end 2632987379 reply_end 2633016339 max_win 28960
+        max_ack 2632987379
+ testpmd> set conntrack rply scale 7 fin 0 acked 1 unack_data 0
+        sent_end 2532480967 reply_end 2532546247 max_win 65280
+        max_ack 2532480967
+ testpmd> flow indirect_action 0 create ingress action conntrack / end
+ testpmd> flow create 0 group 3 ingress pattern eth / ipv4 / tcp / end actions indirect 0 / jump group 5 / end
+ testpmd> flow create 0 group 5 ingress pattern eth / ipv4 / tcp / conntrack is 1 / end actions queue index 5 / end
+
+Construct the conntrack again with only "is_orig" set to 0 (other fields are
+ignored), then use "update" interface to update the direction. Create flow
+rules like above for the peer port.
+
+::
+
+ testpmd> flow indirect_action 0 update 0 action conntrack_update dir / end
+
+Sample meter with policy rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Meter with policy rules can be created by the following commands:
+
+Need to create policy first and actions are set for green/yellow/red colors.
+Create meter with policy id. Create flow with meter id.
+
+Example for policy with meter color action. The purpose is to color the packet
+to reflect the meter color result.
+The meter policy action list: ``green -> green, yellow -> yellow, red -> red``.
+
+::
+
+   testpmd> add port meter profile srtcm_rfc2697 0 13 21504 2688 0 0
+   testpmd> add port meter policy 0 1 g_actions color type green / end y_actions color type yellow / end
+            r_actions color type red / end
+   testpmd> create port meter 0 1 13 1 yes 0xffff 0 0
+   testpmd> flow create 0 priority 0 ingress group 1 pattern eth / end actions meter mtr_id 1 / end
+
+Sample L2TPv2 RSS rules
+~~~~~~~~~~~~~~~~~~~~~~~
+
+L2TPv2 RSS rules can be created by the following commands::
+
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 type control
+            / end actions rss types l2tpv2 end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / end
+            actions rss types eth l2-src-only end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / end
+            actions rss types l2tpv2 end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / ipv4
+            / end actions rss types ipv4 end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / ipv6
+            / udp / end actions rss types ipv6-udp end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv6 / udp / l2tpv2 / ppp / ipv4
+            / tcp / end actions rss types ipv4-tcp end queues end / end
+   testpmd> flow create 0 ingress pattern eth / ipv6 / udp / l2tpv2 / ppp / ipv6
+            / end actions rss types ipv6 end queues end / end
+
+Sample L2TPv2 FDIR rules
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+L2TPv2 FDIR rules can be created by the following commands::
+
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 type control
+            session_id is 0x1111 / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth src is 00:00:00:00:00:01 / ipv4
+            / udp / l2tpv2 type data / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 type data
+            session_id is 0x1111 / ppp / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / ipv4
+            src is 10.0.0.1 / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth / ipv6 / udp / l2tpv2 / ppp / ipv6
+            dst is ABAB:910B:6666:3457:8295:3333:1800:2929 / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / ipv4
+            / udp src is 22 / end actions queue index 3 / end
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / l2tpv2 / ppp / ipv4
+            / tcp dst is 23 / end actions queue index 3 / end
+
+Sample RAW rule
+~~~~~~~~~~~~~~~
+
+A RAW rule can be created as following using ``pattern_hex`` key and mask.
+
+::
+
+    testpmd> flow create 0 group 0 priority 1 ingress pattern raw relative is 0 search is 0 offset
+             is 0 limit is 0 pattern_hex spec 00000000000000000000000000000000000000000000000000000a0a0a0a
+             pattern_hex mask 0000000000000000000000000000000000000000000000000000ffffffff / end actions
+             queue index 4 / end
+
 BPF Functions
 --------------
 
@@ -4896,3 +5125,132 @@ For example to unload BPF filter from TX queue 0, port 0:
 .. code-block:: console
 
    testpmd> bpf-unload tx 0 0
+
+Flex Item Functions
+-------------------
+
+The following sections show functions that configure and create flex item object,
+create flex pattern and use it in a flow rule.
+The commands will use 20 bytes IPv4 header for examples:
+
+::
+
+   0                   1                   2                   3
+   0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |  ver  |  IHL  |     TOS       |        length                 | +0
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |       identification          | flg |    frag. offset         | +4
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |       TTL     |  protocol     |        checksum               | +8
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |               source IP address                               | +12
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+   |              destination IP address                           | +16
+   +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+
+
+Create flex item
+~~~~~~~~~~~~~~~~
+
+Flex item object is created by PMD according to a new header configuration. The
+header configuration is compiled by the testpmd and stored in
+``rte_flow_item_flex_conf`` type variable.
+
+::
+
+   # flow flex_item create <port> <flex id> <configuration file>
+   testpmd> flow flex_item init 0 3 ipv4_flex_config.json
+   port-0: created flex item #3
+
+Flex item configuration is kept in external JSON file.
+It describes the following header elements:
+
+**New header length.**
+
+Specify whether the new header has fixed or variable length and the basic/minimal
+header length value.
+
+If header length is not fixed, header location with a value that completes header
+length calculation and scale/offset function must be added.
+
+Scale function depends on port hardware.
+
+**Next protocol.**
+
+Describes location in the new header that specify following network header type.
+
+**Flow match samples.**
+
+Describes locations in the new header that will be used in flow rules.
+
+Number of flow samples and sample maximal length depend of port hardware.
+
+**Input trigger.**
+
+Describes preceding network header configuration.
+
+**Output trigger.**
+
+Describes conditions that trigger transfer to following network header
+
+.. code-block:: json
+
+   {
+      "next_header": { "field_mode": "FIELD_MODE_FIXED", "field_size": 20},
+      "next_protocol": {"field_size": 8, "field_base": 72},
+      "sample_data": [
+         { "field_mode": "FIELD_MODE_FIXED", "field_size": 32, "field_base": 0},
+         { "field_mode": "FIELD_MODE_FIXED", "field_size": 32, "field_base": 32},
+         { "field_mode": "FIELD_MODE_FIXED", "field_size": 32, "field_base": 64},
+         { "field_mode": "FIELD_MODE_FIXED", "field_size": 32, "field_base": 96}
+      ],
+      "input_link": [
+         {"item": "eth type is 0x0800"},
+         {"item": "vlan inner_type is 0x0800"}
+      ],
+      "output_link": [
+         {"item": "udp", "next": 17},
+         {"item": "tcp", "next": 6},
+         {"item": "icmp", "next": 1}
+      ]
+   }
+
+
+Flex pattern and flow rules
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Flex pattern describe parts of network header that will trigger flex flow item hit in a flow rule.
+Flex pattern directly related to flex item samples configuration.
+Flex pattern can be shared between ports.
+
+**Flex pattern and flow rule to match IPv4 version and 20 bytes length**
+
+::
+
+   # set flex_pattern <pattern_id> is <hex bytes sequence>
+   testpmd> flow flex_item pattern 5 is 45FF
+   created pattern #5
+
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / flex item is 3 pattern is 5 / end actions mark id 1 / queue index 0 / end
+   Flow rule #0 created
+
+**Flex pattern and flow rule to match packets with source address 1.2.3.4**
+
+::
+
+   testpmd> flow flex_item pattern 2 spec 45000000000000000000000001020304 mask FF0000000000000000000000FFFFFFFF
+   created pattern #2
+
+   testpmd> flow create 0 ingress pattern eth / ipv4 / udp / flex item is 3 pattern is 2 / end actions mark id 1 / queue index 0 / end
+   Flow rule #0 created
+
+Driver specific commands
+------------------------
+
+Some drivers provide specific features.
+See:
+
+- :ref:`net/bonding testpmd driver specific commands <bonding_testpmd_commands>`
+- :ref:`net/i40e testpmd driver specific commands <net_i40e_testpmd_commands>`
+- :ref:`net/ixgbe testpmd driver specific commands <net_ixgbe_testpmd_commands>`

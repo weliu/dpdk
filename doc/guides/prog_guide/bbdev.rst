@@ -639,7 +639,7 @@ optionally the ``soft_output`` mbuf data pointers.
    "soft output","soft LLR output buffer (optional)"
    "op_flags","bitmask of all active operation capabilities"
    "rv_index","redundancy version index [0..3]"
-   "iter_max","maximum number of iterations to perofrm in decode all CBs"
+   "iter_max","maximum number of iterations to perform in decode all CBs"
    "iter_min","minimum number of iterations to perform in decoding all CBs"
    "iter_count","number of iterations to performed in decoding all CBs"
    "ext_scale","scale factor on extrinsic info (5 bits)"
@@ -891,6 +891,9 @@ given below.
 |RTE_BBDEV_LDPC_CRC_TYPE_24B_DROP                                    |
 | Set to drop the last CRC bits decoding output                      |
 +--------------------------------------------------------------------+
+|RTE_BBDEV_LDPC_CRC_TYPE_16_CHECK                                    |
+| Set for code block CRC-16 checking                                 |
++--------------------------------------------------------------------+
 |RTE_BBDEV_LDPC_DEINTERLEAVER_BYPASS                                 |
 | Set for bit-level de-interleaver bypass on input stream            |
 +--------------------------------------------------------------------+
@@ -1051,6 +1054,37 @@ capability RTE_BBDEV_LDPC_INTERNAL_HARQ_MEMORY_OUT_ENABLE is set
 then the HARQ is stored in memory internal to the device and not visible
 to BBDEV.
 
+.. note::
+
+    More explicitly for a typical usage of HARQ retransmission
+    in a VRAN application using a HW PMD, there will be 2 cases.
+
+    For 1st transmission, only the HARQ output is enabled:
+
+    - the harq_combined_output.offset is provided to a given address.
+      ie. typically an integer index * 32K,
+      where the index is tracked by the application based on code block index
+      for a given UE and HARQ process.
+
+    - the related operation flag would notably include
+      RTE_BBDEV_LDPC_HQ_COMBINE_OUT_ENABLE and RTE_BBDEV_LDPC_HARQ_6BIT_COMPRESSION.
+
+    - note that no explicit flush or reset of the memory is required.
+
+    For 2nd transmission, an input is also required to benefit from HARQ combination gain:
+
+    - the changes mentioned above are the same (note that rvIndex may be adjusted).
+
+    - the operation flag would additionally include the LDPC_HQ_COMBINE_IN_ENABLE flag.
+
+    - the harq_combined_input.offset must be set to the address of the related code block
+      (ie. same as the harq_combine_output index above for the same code block, HARQ process, UE).
+
+    - the harq_combined_input.length must be set to the length
+      which was provided back in the related harq_combined_output.length
+      when it has processed and dequeued (previous HARQ iteration).
+
+
 The output mbuf data structures are expected to be allocated by the
 application with enough room for the output data.
 
@@ -1084,6 +1118,111 @@ Figure :numref:`figure_turbo_tb_decode` above
 showing the Turbo decoding of CBs using BBDEV interface in TB-mode
 is also valid for LDPC decode.
 
+BBDEV FFT Operation
+~~~~~~~~~~~~~~~~~~~
+
+This operation allows to run a combination of DFT and/or IDFT and/or time-domain windowing.
+These can be used in a modular fashion (using bypass modes) or as a processing pipeline
+which can be used for FFT-based baseband signal processing.
+
+In more details it allows :
+
+* to process the data first through an IDFT of adjustable size and padding;
+* to perform the windowing as a programmable cyclic shift offset of the data
+  followed by a pointwise multiplication by a time domain window;
+* to process the related data through a DFT of adjustable size and
+  de-padding for each such cyclic shift output.
+
+A flexible number of Rx antennas are being processed in parallel with the same configuration.
+The API allows more generally for flexibility in what the PMD may support (capability flags) and
+flexibility to adjust some of the parameters of the processing.
+
+The operation/capability flags that can be set for each FFT operation are given below.
+
+  **NOTE:** The actual operation flags that may be used with a specific
+  bbdev PMD are dependent on the driver capabilities as reported via
+  ``rte_bbdev_info_get()``, and may be a subset of those below.
+
++--------------------------------------------------------------------+
+|Description of FFT capability flags                                 |
++====================================================================+
+|RTE_BBDEV_FFT_WINDOWING                                             |
+| Set to enable/support windowing in time domain                     |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_CS_ADJUSTMENT                                         |
+| Set to enable/support  the cyclic shift time offset adjustment     |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_DFT_BYPASS                                            |
+| Set to bypass the DFT and use directly the IDFT as an option       |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_IDFT_BYPASS                                           |
+| Set to bypass the IDFT and use directly the DFT as an option       |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_WINDOWING_BYPASS                                      |
+| Set to bypass the time domain windowing  as an option              |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_POWER_MEAS                                            |
+| Set to provide an optional power measurement of the DFT output     |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_FP16_INPUT                                            |
+| Set if the input data shall use FP16 format instead of INT16       |
++--------------------------------------------------------------------+
+|RTE_BBDEV_FFT_FP16_OUTPUT                                           |
+| Set if the output data shall use FP16 format instead of INT16      |
++--------------------------------------------------------------------+
+
+The FFT parameters are set out in the table below.
+
++-------------------------+--------------------------------------------------------------+
+|Parameter                |Description                                                   |
++=========================+==============================================================+
+|base_input               |input data                                                    |
++-------------------------+--------------------------------------------------------------+
+|base_output              |output data                                                   |
++-------------------------+--------------------------------------------------------------+
+|power_meas_output        |optional output data with power measurement on DFT output     |
++-------------------------+--------------------------------------------------------------+
+|op_flags                 |bitmask of all active operation capabilities                  |
++-------------------------+--------------------------------------------------------------+
+|input_sequence_size      |size of the input sequence in 32-bits points per antenna      |
++-------------------------+--------------------------------------------------------------+
+|input_leading_padding    |number of points padded at the start of input data            |
++-------------------------+--------------------------------------------------------------+
+|output_sequence_size     |size of the output sequence per antenna and cyclic shift      |
++-------------------------+--------------------------------------------------------------+
+|output_leading_depadding |number of points de-padded at the start of output data        |
++-------------------------+--------------------------------------------------------------+
+|window_index             |optional windowing profile index used for each cyclic shift   |
++-------------------------+--------------------------------------------------------------+
+|cs_bitmap                |bitmap of the cyclic shift output requested (LSB for index 0) |
++-------------------------+--------------------------------------------------------------+
+|num_antennas_log2        |number of antennas as a log2 (10 maps to 1024...)             |
++-------------------------+--------------------------------------------------------------+
+|idft_log2                |IDFT size as a log2                                           |
++-------------------------+--------------------------------------------------------------+
+|dft_log2                 |DFT size as a log2                                            |
++-------------------------+--------------------------------------------------------------+
+|cs_time_adjustment       |adjustment of time position of all the cyclic shift output    |
++-------------------------+--------------------------------------------------------------+
+|idft_shift               |shift down of signal level post iDFT                          |
++-------------------------+--------------------------------------------------------------+
+|dft_shift                |shift down of signal level post DFT                           |
++-------------------------+--------------------------------------------------------------+
+|ncs_reciprocal           |inverse of max number of CS normalized to 15b (ie. 231 for 12)|
++-------------------------+--------------------------------------------------------------+
+|power_shift              |shift down of level of power measurement when enabled         |
++-------------------------+--------------------------------------------------------------+
+|fp16_exp_adjust          |value added to FP16 exponent at conversion from INT16         |
++-------------------------+--------------------------------------------------------------+
+
+The mbuf input ``base_input`` is mandatory for all bbdev PMDs and
+is the incoming data for the processing. Its size may not fit into an actual mbuf,
+but the structure is used to pass iova address.
+The mbuf output ``output`` is mandatory and is output of the FFT processing chain.
+Each point is a complex number of 32bits :
+either as 2 INT16 or as 2 FP16 based when the option supported.
+The data layout is based on contiguous concatenation of output data
+first by cyclic shift then by antenna.
 
 Sample code
 -----------

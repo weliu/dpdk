@@ -20,7 +20,6 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
-#include <rte_atomic.h>
 #include <rte_ring.h>
 #include <rte_log.h>
 #include <rte_debug.h>
@@ -158,10 +157,12 @@ static int
 sleep_lcore(__rte_unused void *dummy)
 {
 	/* Used to pick a display thread - static, so zero-initialised */
-	static rte_atomic32_t display_stats;
+	static uint32_t display_stats;
 
+	uint32_t status = 0;
 	/* Only one core should display stats */
-	if (rte_atomic32_test_and_set(&display_stats)) {
+	if (__atomic_compare_exchange_n(&display_stats, &status, 1, 0,
+			__ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
 		const unsigned sleeptime = 1;
 		printf("Core %u displaying statistics\n", rte_lcore_id());
 
@@ -233,7 +234,7 @@ process_packets(uint32_t port_num __rte_unused,
 		struct rte_mbuf *pkts[], uint16_t rx_count)
 {
 	uint16_t i;
-	uint8_t client = 0;
+	static uint8_t client;
 
 	for (i = 0; i < rx_count; i++) {
 		enqueue_rx_packet(client, pkts[i]);
@@ -304,5 +305,9 @@ main(int argc, char *argv[])
 	rte_eal_mp_remote_launch(sleep_lcore, NULL, SKIP_MAIN);
 
 	do_packet_forwarding();
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

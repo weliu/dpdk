@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #include <stdio.h>
@@ -101,22 +102,22 @@ txgbe_fdir_enable(struct txgbe_hw *hw, uint32_t fdirctrl)
  * flexbytes matching field, and drop queue (only for perfect matching mode).
  */
 static inline int
-configure_fdir_flags(const struct rte_fdir_conf *conf,
+configure_fdir_flags(const struct rte_eth_fdir_conf *conf,
 		     uint32_t *fdirctrl, uint32_t *flex)
 {
 	*fdirctrl = 0;
 	*flex = 0;
 
 	switch (conf->pballoc) {
-	case RTE_FDIR_PBALLOC_64K:
+	case RTE_ETH_FDIR_PBALLOC_64K:
 		/* 8k - 1 signature filters */
 		*fdirctrl |= TXGBE_FDIRCTL_BUF_64K;
 		break;
-	case RTE_FDIR_PBALLOC_128K:
+	case RTE_ETH_FDIR_PBALLOC_128K:
 		/* 16k - 1 signature filters */
 		*fdirctrl |= TXGBE_FDIRCTL_BUF_128K;
 		break;
-	case RTE_FDIR_PBALLOC_256K:
+	case RTE_ETH_FDIR_PBALLOC_256K:
 		/* 32k - 1 signature filters */
 		*fdirctrl |= TXGBE_FDIRCTL_BUF_256K;
 		break;
@@ -164,24 +165,12 @@ configure_fdir_flags(const struct rte_fdir_conf *conf,
 	return 0;
 }
 
-static inline uint32_t
-reverse_fdir_bmks(uint16_t hi_dword, uint16_t lo_dword)
-{
-	uint32_t mask = hi_dword << 16;
-
-	mask |= lo_dword;
-	mask = ((mask & 0x55555555) << 1) | ((mask & 0xAAAAAAAA) >> 1);
-	mask = ((mask & 0x33333333) << 2) | ((mask & 0xCCCCCCCC) >> 2);
-	mask = ((mask & 0x0F0F0F0F) << 4) | ((mask & 0xF0F0F0F0) >> 4);
-	return ((mask & 0x00FF00FF) << 8) | ((mask & 0xFF00FF00) >> 8);
-}
-
 int
 txgbe_fdir_set_input_mask(struct rte_eth_dev *dev)
 {
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_fdir_info *info = TXGBE_DEV_FDIR(dev);
-	enum rte_fdir_mode mode = dev->data->dev_conf.fdir_conf.mode;
+	enum rte_fdir_mode mode = TXGBE_DEV_FDIR_CONF(dev)->mode;
 	/*
 	 * mask VM pool and DIPv6 since there are currently not supported
 	 * mask FLEX byte, it will be set in flex_conf
@@ -212,9 +201,9 @@ txgbe_fdir_set_input_mask(struct rte_eth_dev *dev)
 	/* TBD: don't support encapsulation yet */
 	wr32(hw, TXGBE_FDIRMSK, fdirm);
 
-	/* store the TCP/UDP port masks, bit reversed from port layout */
-	fdirtcpm = reverse_fdir_bmks(rte_be_to_cpu_16(info->mask.dst_port_mask),
-			rte_be_to_cpu_16(info->mask.src_port_mask));
+	/* store the TCP/UDP port masks */
+	fdirtcpm = rte_be_to_cpu_16(info->mask.dst_port_mask) << 16;
+	fdirtcpm |= rte_be_to_cpu_16(info->mask.src_port_mask);
 
 	/* write all the same so that UDP, TCP and SCTP use the same mask
 	 * (little-endian)
@@ -243,9 +232,8 @@ txgbe_fdir_set_input_mask(struct rte_eth_dev *dev)
 static int
 txgbe_fdir_store_input_mask(struct rte_eth_dev *dev)
 {
-	struct rte_eth_fdir_masks *input_mask =
-				&dev->data->dev_conf.fdir_conf.mask;
-	enum rte_fdir_mode mode = dev->data->dev_conf.fdir_conf.mode;
+	struct rte_eth_fdir_masks *input_mask = &TXGBE_DEV_FDIR_CONF(dev)->mask;
+	enum rte_fdir_mode mode = TXGBE_DEV_FDIR_CONF(dev)->mode;
 	struct txgbe_hw_fdir_info *info = TXGBE_DEV_FDIR(dev);
 	uint16_t dst_ipv6m = 0;
 	uint16_t src_ipv6m = 0;
@@ -305,7 +293,7 @@ static int
 txgbe_set_fdir_flex_conf(struct rte_eth_dev *dev, uint32_t flex)
 {
 	const struct rte_eth_fdir_flex_conf *conf =
-				&dev->data->dev_conf.fdir_conf.flex_conf;
+				&TXGBE_DEV_FDIR_CONF(dev)->flex_conf;
 	struct txgbe_hw *hw = TXGBE_DEV_HW(dev);
 	struct txgbe_hw_fdir_info *info = TXGBE_DEV_FDIR(dev);
 	const struct rte_eth_flex_payload_cfg *flex_cfg;
@@ -375,7 +363,7 @@ txgbe_fdir_configure(struct rte_eth_dev *dev)
 	int err;
 	uint32_t fdirctrl, flex, pbsize;
 	int i;
-	enum rte_fdir_mode mode = dev->data->dev_conf.fdir_conf.mode;
+	enum rte_fdir_mode mode = TXGBE_DEV_FDIR_CONF(dev)->mode;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -384,8 +372,7 @@ txgbe_fdir_configure(struct rte_eth_dev *dev)
 	    mode != RTE_FDIR_MODE_PERFECT)
 		return -ENOSYS;
 
-	err = configure_fdir_flags(&dev->data->dev_conf.fdir_conf,
-				   &fdirctrl, &flex);
+	err = configure_fdir_flags(TXGBE_DEV_FDIR_CONF(dev), &fdirctrl, &flex);
 	if (err)
 		return err;
 
@@ -532,15 +519,15 @@ txgbe_atr_compute_hash(struct txgbe_atr_input *atr_input,
 
 static uint32_t
 atr_compute_perfect_hash(struct txgbe_atr_input *input,
-		enum rte_fdir_pballoc_type pballoc)
+		enum rte_eth_fdir_pballoc_type pballoc)
 {
 	uint32_t bucket_hash;
 
 	bucket_hash = txgbe_atr_compute_hash(input,
 				TXGBE_ATR_BUCKET_HASH_KEY);
-	if (pballoc == RTE_FDIR_PBALLOC_256K)
+	if (pballoc == RTE_ETH_FDIR_PBALLOC_256K)
 		bucket_hash &= PERFECT_BUCKET_256KB_HASH_MASK;
-	else if (pballoc == RTE_FDIR_PBALLOC_128K)
+	else if (pballoc == RTE_ETH_FDIR_PBALLOC_128K)
 		bucket_hash &= PERFECT_BUCKET_128KB_HASH_MASK;
 	else
 		bucket_hash &= PERFECT_BUCKET_64KB_HASH_MASK;
@@ -575,15 +562,15 @@ txgbe_fdir_check_cmd_complete(struct txgbe_hw *hw, uint32_t *fdircmd)
  */
 static uint32_t
 atr_compute_signature_hash(struct txgbe_atr_input *input,
-		enum rte_fdir_pballoc_type pballoc)
+		enum rte_eth_fdir_pballoc_type pballoc)
 {
 	uint32_t bucket_hash, sig_hash;
 
 	bucket_hash = txgbe_atr_compute_hash(input,
 				TXGBE_ATR_BUCKET_HASH_KEY);
-	if (pballoc == RTE_FDIR_PBALLOC_256K)
+	if (pballoc == RTE_ETH_FDIR_PBALLOC_256K)
 		bucket_hash &= SIG_BUCKET_256KB_HASH_MASK;
-	else if (pballoc == RTE_FDIR_PBALLOC_128K)
+	else if (pballoc == RTE_ETH_FDIR_PBALLOC_128K)
 		bucket_hash &= SIG_BUCKET_128KB_HASH_MASK;
 	else
 		bucket_hash &= SIG_BUCKET_64KB_HASH_MASK;
@@ -803,7 +790,7 @@ txgbe_fdir_filter_program(struct rte_eth_dev *dev,
 	bool is_perfect = FALSE;
 	int err;
 	struct txgbe_hw_fdir_info *info = TXGBE_DEV_FDIR(dev);
-	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	enum rte_fdir_mode fdir_mode = TXGBE_DEV_FDIR_CONF(dev)->mode;
 	struct txgbe_fdir_filter *node;
 
 	if (fdir_mode == RTE_FDIR_MODE_NONE ||
@@ -820,11 +807,11 @@ txgbe_fdir_filter_program(struct rte_eth_dev *dev,
 			return -ENOTSUP;
 		}
 		fdirhash = atr_compute_perfect_hash(&rule->input,
-				dev->data->dev_conf.fdir_conf.pballoc);
+				TXGBE_DEV_FDIR_CONF(dev)->pballoc);
 		fdirhash |= TXGBE_FDIRPIHASH_IDX(rule->soft_id);
 	} else {
 		fdirhash = atr_compute_signature_hash(&rule->input,
-				dev->data->dev_conf.fdir_conf.pballoc);
+				TXGBE_DEV_FDIR_CONF(dev)->pballoc);
 	}
 
 	if (del) {
@@ -850,7 +837,7 @@ txgbe_fdir_filter_program(struct rte_eth_dev *dev,
 				    " signature mode.");
 			return -EINVAL;
 		}
-		queue = dev->data->dev_conf.fdir_conf.drop_queue;
+		queue = TXGBE_DEV_FDIR_CONF(dev)->drop_queue;
 	} else if (rule->queue < TXGBE_MAX_RX_QUEUE_NUM) {
 		queue = rule->queue;
 	} else {
@@ -931,7 +918,7 @@ txgbe_fdir_filter_restore(struct rte_eth_dev *dev)
 	struct txgbe_hw_fdir_info *fdir_info = TXGBE_DEV_FDIR(dev);
 	struct txgbe_fdir_filter *node;
 	bool is_perfect = FALSE;
-	enum rte_fdir_mode fdir_mode = dev->data->dev_conf.fdir_conf.mode;
+	enum rte_fdir_mode fdir_mode = TXGBE_DEV_FDIR_CONF(dev)->mode;
 
 	if (fdir_mode >= RTE_FDIR_MODE_PERFECT &&
 	    fdir_mode <= RTE_FDIR_MODE_PERFECT_TUNNEL)

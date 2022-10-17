@@ -6,13 +6,16 @@
 
 #include <stdbool.h>
 
-#ifndef STATS_INTERVAL
-#define STATS_INTERVAL 0
-#endif
+#define MAX_RX_QUEUE_PER_LCORE 16
 
 #define NB_SOCKETS 4
 
 #define MAX_PKT_BURST 32
+#define MAX_PKT_BURST_VEC 256
+
+#define MAX_PKTS                                  \
+	((MAX_PKT_BURST_VEC > MAX_PKT_BURST ?     \
+	  MAX_PKT_BURST_VEC : MAX_PKT_BURST) * 2)
 
 #define RTE_LOGTYPE_IPSEC RTE_LOGTYPE_USER1
 
@@ -47,13 +50,16 @@
 
 #define ETHADDR(a, b, c, d, e, f) (__BYTES_TO_UINT64(a, b, c, d, e, f, 0, 0))
 
+#define IPSEC_NAT_T_PORT 4500
+#define MBUF_PTYPE_TUNNEL_ESP_IN_UDP (RTE_PTYPE_TUNNEL_ESP | RTE_PTYPE_L4_UDP)
+
 struct traffic_type {
-	const uint8_t *data[MAX_PKT_BURST * 2];
-	struct rte_mbuf *pkts[MAX_PKT_BURST * 2];
-	void *saptr[MAX_PKT_BURST * 2];
-	uint32_t res[MAX_PKT_BURST * 2];
 	uint32_t num;
-};
+	struct rte_mbuf *pkts[MAX_PKTS];
+	const uint8_t *data[MAX_PKTS];
+	void *saptr[MAX_PKTS];
+	uint32_t res[MAX_PKTS];
+} __rte_cache_aligned;
 
 struct ipsec_traffic {
 	struct traffic_type ipsec;
@@ -80,7 +86,17 @@ struct ethaddr_info {
 	uint64_t src, dst;
 };
 
-#if (STATS_INTERVAL > 0)
+struct ipsec_spd_stats {
+	uint64_t protect;
+	uint64_t bypass;
+	uint64_t discard;
+};
+
+struct ipsec_sa_stats {
+	uint64_t hit;
+	uint64_t miss;
+};
+
 struct ipsec_core_statistics {
 	uint64_t tx;
 	uint64_t rx;
@@ -88,10 +104,29 @@ struct ipsec_core_statistics {
 	uint64_t tx_call;
 	uint64_t dropped;
 	uint64_t burst_rx;
+
+	struct {
+		struct ipsec_spd_stats spd4;
+		struct ipsec_spd_stats spd6;
+		struct ipsec_sa_stats sad;
+	} outbound;
+
+	struct {
+		struct ipsec_spd_stats spd4;
+		struct ipsec_spd_stats spd6;
+		struct ipsec_sa_stats sad;
+	} inbound;
+
+	struct {
+		uint64_t miss;
+	} lpm4;
+
+	struct {
+		uint64_t miss;
+	} lpm6;
 } __rte_cache_aligned;
 
-struct ipsec_core_statistics core_statistics[RTE_MAX_LCORE];
-#endif /* STATS_INTERVAL */
+extern struct ipsec_core_statistics core_statistics[RTE_MAX_LCORE];
 
 extern struct ethaddr_info ethaddr_tbl[RTE_MAX_ETHPORTS];
 
@@ -100,8 +135,25 @@ extern uint32_t unprotected_port_mask;
 
 /* Index of SA in single mode */
 extern uint32_t single_sa_idx;
+extern uint32_t single_sa;
 
 extern volatile bool force_quit;
+
+extern uint32_t nb_bufs_in_pool;
+
+extern bool per_port_pool;
+
+extern uint32_t mtu_size;
+extern uint32_t frag_tbl_sz;
+
+#define SS_F		(1U << 0)	/* Single SA mode */
+#define INL_PR_F	(1U << 1)	/* Inline Protocol */
+#define INL_CR_F	(1U << 2)	/* Inline Crypto */
+#define LA_PR_F		(1U << 3)	/* Lookaside Protocol */
+#define LA_ANY_F	(1U << 4)	/* Lookaside Any */
+#define MAX_F		(LA_ANY_F << 1)
+
+extern uint16_t wrkr_flags;
 
 static inline uint8_t
 is_unprotected_port(uint16_t port_id)
@@ -112,38 +164,26 @@ is_unprotected_port(uint16_t port_id)
 static inline void
 core_stats_update_rx(int n)
 {
-#if (STATS_INTERVAL > 0)
 	int lcore_id = rte_lcore_id();
 	core_statistics[lcore_id].rx += n;
 	core_statistics[lcore_id].rx_call++;
 	if (n == MAX_PKT_BURST)
 		core_statistics[lcore_id].burst_rx += n;
-#else
-	RTE_SET_USED(n);
-#endif /* STATS_INTERVAL */
 }
 
 static inline void
 core_stats_update_tx(int n)
 {
-#if (STATS_INTERVAL > 0)
 	int lcore_id = rte_lcore_id();
 	core_statistics[lcore_id].tx += n;
 	core_statistics[lcore_id].tx_call++;
-#else
-	RTE_SET_USED(n);
-#endif /* STATS_INTERVAL */
 }
 
 static inline void
 core_stats_update_drop(int n)
 {
-#if (STATS_INTERVAL > 0)
 	int lcore_id = rte_lcore_id();
 	core_statistics[lcore_id].dropped += n;
-#else
-	RTE_SET_USED(n);
-#endif /* STATS_INTERVAL */
 }
 
 /* helper routine to free bulk of packets */

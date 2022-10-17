@@ -28,6 +28,8 @@
 /*Pipeline mode, fdir used at distributor stage*/
 #define ICE_FLOW_CLASSIFY_STAGE_DISTRIBUTOR 2
 
+#define ICE_FLOW_ENGINE_DISABLED(mask, type) ((mask) & BIT(type))
+
 static struct ice_engine_list engine_list =
 		TAILQ_HEAD_INITIALIZER(engine_list);
 
@@ -62,6 +64,17 @@ const struct rte_flow_ops ice_flow_ops = {
 
 /* empty */
 enum rte_flow_item_type pattern_empty[] = {
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
+enum rte_flow_item_type pattern_any[] = {
+	RTE_FLOW_ITEM_TYPE_ANY,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+
+/* raw */
+enum rte_flow_item_type pattern_raw[] = {
+	RTE_FLOW_ITEM_TYPE_RAW,
 	RTE_FLOW_ITEM_TYPE_END,
 };
 
@@ -210,6 +223,27 @@ enum rte_flow_item_type pattern_eth_qinq_ipv6[] = {
 	RTE_FLOW_ITEM_TYPE_VLAN,
 	RTE_FLOW_ITEM_TYPE_VLAN,
 	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+enum rte_flow_item_type pattern_eth_ipv6_frag_ext[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_IPV6_FRAG_EXT,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+enum rte_flow_item_type pattern_eth_vlan_ipv6_frag_ext[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_VLAN,
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_IPV6_FRAG_EXT,
+	RTE_FLOW_ITEM_TYPE_END,
+};
+enum rte_flow_item_type pattern_eth_qinq_ipv6_frag_ext[] = {
+	RTE_FLOW_ITEM_TYPE_ETH,
+	RTE_FLOW_ITEM_TYPE_VLAN,
+	RTE_FLOW_ITEM_TYPE_VLAN,
+	RTE_FLOW_ITEM_TYPE_IPV6,
+	RTE_FLOW_ITEM_TYPE_IPV6_FRAG_EXT,
 	RTE_FLOW_ITEM_TYPE_END,
 };
 enum rte_flow_item_type pattern_eth_ipv6_udp[] = {
@@ -1774,6 +1808,7 @@ enum rte_flow_item_type pattern_eth_ipv6_pfcp[] = {
 typedef struct ice_flow_engine * (*parse_engine_t)(struct ice_adapter *ad,
 		struct rte_flow *flow,
 		struct ice_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error);
@@ -1798,11 +1833,19 @@ ice_flow_init(struct ice_adapter *ad)
 	TAILQ_INIT(&pf->dist_parser_list);
 	rte_spinlock_init(&pf->flow_ops_lock);
 
-	TAILQ_FOREACH_SAFE(engine, &engine_list, node, temp) {
+	if (ice_parser_create(&ad->hw, &ad->psr) != ICE_SUCCESS)
+		PMD_INIT_LOG(WARNING, "Failed to initialize DDP parser, raw packet filter will not be supported");
+
+	RTE_TAILQ_FOREACH_SAFE(engine, &engine_list, node, temp) {
 		if (engine->init == NULL) {
 			PMD_INIT_LOG(ERR, "Invalid engine type (%d)",
 					engine->type);
 			return -ENOTSUP;
+		}
+
+		if (ICE_FLOW_ENGINE_DISABLED(ad->disabled_engine_mask, engine->type)) {
+			PMD_INIT_LOG(INFO, "Engine %d disabled", engine->type);
+			continue;
 		}
 
 		ret = engine->init(ad);
@@ -1824,7 +1867,12 @@ ice_flow_uninit(struct ice_adapter *ad)
 	struct ice_flow_parser_node *p_parser;
 	void *temp;
 
-	TAILQ_FOREACH_SAFE(engine, &engine_list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(engine, &engine_list, node, temp) {
+		if (ICE_FLOW_ENGINE_DISABLED(ad->disabled_engine_mask, engine->type)) {
+			PMD_DRV_LOG(DEBUG, "Engine %d disabled skip it", engine->type);
+			continue;
+		}
+
 		if (engine->uninit)
 			engine->uninit(ad);
 	}
@@ -1851,6 +1899,11 @@ ice_flow_uninit(struct ice_adapter *ad)
 	while ((p_parser = TAILQ_FIRST(&pf->dist_parser_list))) {
 		TAILQ_REMOVE(&pf->dist_parser_list, p_parser, node);
 		rte_free(p_parser);
+	}
+
+	if (ad->psr != NULL) {
+		ice_parser_destroy(ad->psr);
+		ad->psr = NULL;
 	}
 }
 
@@ -1884,6 +1937,8 @@ ice_register_parser(struct ice_flow_parser *parser,
 {
 	struct ice_parser_list *list;
 	struct ice_flow_parser_node *parser_node;
+	struct ice_flow_parser_node *existing_node;
+	void *temp;
 
 	parser_node = rte_zmalloc("ice_parser", sizeof(*parser_node), 0);
 	if (parser_node == NULL) {
@@ -1899,16 +1954,37 @@ ice_register_parser(struct ice_flow_parser *parser,
 	if (ad->devargs.pipe_mode_support) {
 		TAILQ_INSERT_TAIL(list, parser_node, node);
 	} else {
-		if (parser->engine->type == ICE_FLOW_ENGINE_SWITCH ||
-				parser->engine->type == ICE_FLOW_ENGINE_HASH)
+		if (parser->engine->type == ICE_FLOW_ENGINE_SWITCH) {
+			RTE_TAILQ_FOREACH_SAFE(existing_node, list,
+					       node, temp) {
+				if (existing_node->parser->engine->type ==
+				    ICE_FLOW_ENGINE_ACL) {
+					TAILQ_INSERT_AFTER(list, existing_node,
+							   parser_node, node);
+					goto DONE;
+				}
+			}
+			TAILQ_INSERT_HEAD(list, parser_node, node);
+		} else if (parser->engine->type == ICE_FLOW_ENGINE_FDIR) {
+			RTE_TAILQ_FOREACH_SAFE(existing_node, list,
+					       node, temp) {
+				if (existing_node->parser->engine->type ==
+				    ICE_FLOW_ENGINE_SWITCH) {
+					TAILQ_INSERT_AFTER(list, existing_node,
+							   parser_node, node);
+					goto DONE;
+				}
+			}
+			TAILQ_INSERT_HEAD(list, parser_node, node);
+		} else if (parser->engine->type == ICE_FLOW_ENGINE_HASH) {
 			TAILQ_INSERT_TAIL(list, parser_node, node);
-		else if (parser->engine->type == ICE_FLOW_ENGINE_FDIR)
+		} else if (parser->engine->type == ICE_FLOW_ENGINE_ACL) {
 			TAILQ_INSERT_HEAD(list, parser_node, node);
-		else if (parser->engine->type == ICE_FLOW_ENGINE_ACL)
-			TAILQ_INSERT_HEAD(list, parser_node, node);
-		else
+		} else {
 			return -EINVAL;
+		}
 	}
+DONE:
 	return 0;
 }
 
@@ -1924,7 +2000,7 @@ ice_unregister_parser(struct ice_flow_parser *parser,
 	if (list == NULL)
 		return;
 
-	TAILQ_FOREACH_SAFE(p_parser, list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(p_parser, list, node, temp) {
 		if (p_parser->parser->engine->type == parser->engine->type) {
 			TAILQ_REMOVE(list, p_parser, node);
 			rte_free(p_parser);
@@ -1965,11 +2041,10 @@ ice_flow_valid_attr(struct ice_adapter *ad,
 	} else {
 		*ice_pipeline_stage =
 			ICE_FLOW_CLASSIFY_STAGE_DISTRIBUTOR_ONLY;
-		/* Not supported */
-		if (attr->priority) {
+		if (attr->priority > 1) {
 			rte_flow_error_set(error, EINVAL,
 					RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY,
-					attr, "Not support priority.");
+					attr, "Only support priority 0 and 1.");
 			return -rte_errno;
 		}
 	}
@@ -2060,6 +2135,8 @@ struct ice_ptype_match {
 };
 
 static struct ice_ptype_match ice_ptype_map[] = {
+	{pattern_raw,					ICE_PTYPE_IPV4_PAY},
+	{pattern_any,					ICE_PTYPE_IPV4_PAY},
 	{pattern_eth_ipv4,				ICE_PTYPE_IPV4_PAY},
 	{pattern_eth_ipv4_udp,				ICE_PTYPE_IPV4_UDP_PAY},
 	{pattern_eth_ipv4_tcp,				ICE_PTYPE_IPV4_TCP_PAY},
@@ -2087,6 +2164,7 @@ static struct ice_ptype_match ice_ptype_map[] = {
 	{pattern_eth_ipv6_udp,				ICE_PTYPE_IPV6_UDP_PAY},
 	{pattern_eth_ipv6_tcp,				ICE_PTYPE_IPV6_TCP_PAY},
 	{pattern_eth_ipv6_sctp,				ICE_PTYPE_IPV6_SCTP_PAY},
+	{pattern_eth_ipv6_frag_ext,			ICE_PTYPE_IPV6FRAG_PAY},
 	{pattern_eth_ipv6_gtpu,				ICE_MAC_IPV6_GTPU},
 	{pattern_eth_ipv6_gtpu_eh,			ICE_MAC_IPV6_GTPU},
 	{pattern_eth_ipv6_gtpu_ipv4,			ICE_MAC_IPV6_GTPU_IPV4_PAY},
@@ -2112,11 +2190,15 @@ static struct ice_ptype_match ice_ptype_map[] = {
 	{pattern_eth_arp,				ICE_PTYPE_MAC_PAY},
 	{pattern_eth_vlan_ipv4,				ICE_PTYPE_IPV4_PAY},
 	{pattern_eth_qinq_ipv4,				ICE_PTYPE_IPV4_PAY},
+	{pattern_eth_qinq_ipv4_udp,			ICE_PTYPE_IPV4_UDP_PAY},
+	{pattern_eth_qinq_ipv4_tcp,			ICE_PTYPE_IPV4_TCP_PAY},
 	{pattern_eth_vlan_ipv4_udp,			ICE_PTYPE_IPV4_UDP_PAY},
 	{pattern_eth_vlan_ipv4_tcp,			ICE_PTYPE_IPV4_TCP_PAY},
 	{pattern_eth_vlan_ipv4_sctp,			ICE_PTYPE_IPV4_SCTP_PAY},
 	{pattern_eth_vlan_ipv6,				ICE_PTYPE_IPV6_PAY},
 	{pattern_eth_qinq_ipv6,				ICE_PTYPE_IPV6_PAY},
+	{pattern_eth_qinq_ipv6_udp,			ICE_PTYPE_IPV6_UDP_PAY},
+	{pattern_eth_qinq_ipv6_tcp,			ICE_PTYPE_IPV6_TCP_PAY},
 	{pattern_eth_vlan_ipv6_udp,			ICE_PTYPE_IPV6_UDP_PAY},
 	{pattern_eth_vlan_ipv6_tcp,			ICE_PTYPE_IPV6_TCP_PAY},
 	{pattern_eth_vlan_ipv6_sctp,			ICE_PTYPE_IPV6_SCTP_PAY},
@@ -2240,6 +2322,7 @@ static struct ice_flow_engine *
 ice_parse_engine_create(struct ice_adapter *ad,
 		struct rte_flow *flow,
 		struct ice_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error)
@@ -2249,13 +2332,13 @@ ice_parse_engine_create(struct ice_adapter *ad,
 	void *meta = NULL;
 	void *temp;
 
-	TAILQ_FOREACH_SAFE(parser_node, parser_list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(parser_node, parser_list, node, temp) {
 		int ret;
 
 		if (parser_node->parser->parse_pattern_action(ad,
 				parser_node->parser->array,
 				parser_node->parser->array_len,
-				pattern, actions, &meta, error) < 0)
+				pattern, actions, priority, &meta, error) < 0)
 			continue;
 
 		engine = parser_node->parser->engine;
@@ -2273,6 +2356,7 @@ static struct ice_flow_engine *
 ice_parse_engine_validate(struct ice_adapter *ad,
 		struct rte_flow *flow __rte_unused,
 		struct ice_parser_list *parser_list,
+		uint32_t priority,
 		const struct rte_flow_item pattern[],
 		const struct rte_flow_action actions[],
 		struct rte_flow_error *error)
@@ -2281,11 +2365,11 @@ ice_parse_engine_validate(struct ice_adapter *ad,
 	struct ice_flow_parser_node *parser_node;
 	void *temp;
 
-	TAILQ_FOREACH_SAFE(parser_node, parser_list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(parser_node, parser_list, node, temp) {
 		if (parser_node->parser->parse_pattern_action(ad,
 				parser_node->parser->array,
 				parser_node->parser->array_len,
-				pattern, actions, NULL, error) < 0)
+				pattern, actions, priority, NULL, error) < 0)
 			continue;
 
 		engine = parser_node->parser->engine;
@@ -2335,7 +2419,7 @@ ice_flow_process_filter(struct rte_eth_dev *dev,
 		return ret;
 
 	*engine = ice_parse_engine(ad, flow, &pf->rss_parser_list,
-			pattern, actions, error);
+			attr->priority, pattern, actions, error);
 	if (*engine != NULL)
 		return 0;
 
@@ -2343,11 +2427,11 @@ ice_flow_process_filter(struct rte_eth_dev *dev,
 	case ICE_FLOW_CLASSIFY_STAGE_DISTRIBUTOR_ONLY:
 	case ICE_FLOW_CLASSIFY_STAGE_DISTRIBUTOR:
 		*engine = ice_parse_engine(ad, flow, &pf->dist_parser_list,
-				pattern, actions, error);
+				attr->priority, pattern, actions, error);
 		break;
 	case ICE_FLOW_CLASSIFY_STAGE_PERMISSION:
 		*engine = ice_parse_engine(ad, flow, &pf->perm_parser_list,
-				pattern, actions, error);
+				attr->priority, pattern, actions, error);
 		break;
 	default:
 		return -EINVAL;
@@ -2453,11 +2537,13 @@ ice_flow_flush(struct rte_eth_dev *dev,
 	void *temp;
 	int ret = 0;
 
-	TAILQ_FOREACH_SAFE(p_flow, &pf->flow_list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(p_flow, &pf->flow_list, node, temp) {
 		ret = ice_flow_destroy(dev, p_flow, error);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to flush flows");
-			return -EINVAL;
+			if (ret != -EAGAIN)
+				ret = -EINVAL;
+			return ret;
 		}
 	}
 
@@ -2494,15 +2580,16 @@ ice_flow_query(struct rte_eth_dev *dev,
 			ret = flow->engine->query_count(ad, flow, count, error);
 			break;
 		default:
-			return rte_flow_error_set(error, ENOTSUP,
+			ret = rte_flow_error_set(error, ENOTSUP,
 					RTE_FLOW_ERROR_TYPE_ACTION,
 					actions,
 					"action not supported");
+			goto out;
 		}
 	}
 
+out:
 	rte_spinlock_unlock(&pf->flow_ops_lock);
-
 	return ret;
 }
 
@@ -2513,21 +2600,21 @@ ice_flow_redirect(struct ice_adapter *ad,
 	struct ice_pf *pf = &ad->pf;
 	struct rte_flow *p_flow;
 	void *temp;
-	int ret;
+	int ret = 0;
 
 	rte_spinlock_lock(&pf->flow_ops_lock);
 
-	TAILQ_FOREACH_SAFE(p_flow, &pf->flow_list, node, temp) {
+	RTE_TAILQ_FOREACH_SAFE(p_flow, &pf->flow_list, node, temp) {
 		if (!p_flow->engine->redirect)
 			continue;
 		ret = p_flow->engine->redirect(ad, p_flow, rd);
 		if (ret) {
 			PMD_DRV_LOG(ERR, "Failed to redirect flows");
-			return ret;
+			break;
 		}
 	}
 
 	rte_spinlock_unlock(&pf->flow_ops_lock);
 
-	return 0;
+	return ret;
 }

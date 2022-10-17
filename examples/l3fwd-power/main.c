@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -48,6 +47,7 @@
 #include <rte_metrics.h>
 #include <rte_telemetry.h>
 #include <rte_power_pmd_mgmt.h>
+#include <rte_power_intel_uncore.h>
 
 #include "perf_core.h"
 #include "main.h"
@@ -122,8 +122,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
 /*
  * These two thresholds were decided on by running the training algorithm on
@@ -135,8 +135,8 @@
 
 #define NUM_TELSTATS RTE_DIM(telstats_strings)
 
-static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+static uint16_t nb_rxd = RX_DESC_DEFAULT;
+static uint16_t nb_txd = TX_DESC_DEFAULT;
 
 /* ethernet addresses of ports */
 static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
@@ -162,6 +162,9 @@ static struct rte_timer telemetry_timer;
 /* stats index returned by metrics lib */
 int telstats_index;
 
+/* flag to check if uncore option enabled */
+int enabled_uncore = -1;
+
 struct telstats_name {
 	char name[RTE_ETH_XSTATS_NAME_SIZE];
 };
@@ -178,6 +181,12 @@ enum busy_rate {
 	ZERO = 0,
 	PARTIAL = 50,
 	FULL = 100
+};
+
+enum uncore_choice {
+	UNCORE_MIN = 0,
+	UNCORE_MAX = 1,
+	UNCORE_IDX = 2
 };
 
 /* reference poll count to measure core busyness */
@@ -207,6 +216,7 @@ enum appmode {
 enum appmode app_mode;
 
 static enum rte_power_pmd_mgmt_type pmgmt_type;
+bool baseline_enabled;
 
 enum freq_scale_hint_t
 {
@@ -249,21 +259,25 @@ uint16_t nb_lcore_params = RTE_DIM(lcore_params_array_default);
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode        = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		.split_hdr_size = 0,
-		.offloads = DEV_RX_OFFLOAD_CHECKSUM,
+		.mq_mode        = RTE_ETH_MQ_RX_RSS,
+		.offloads = RTE_ETH_RX_OFFLOAD_CHECKSUM,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_UDP,
+			.rss_hf = RTE_ETH_RSS_UDP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	}
 };
+
+static uint32_t max_pkt_len;
+static uint32_t max_empty_polls = 512;
+static uint32_t pause_duration = 1;
+static uint32_t scale_freq_min;
+static uint32_t scale_freq_max;
 
 static struct rte_mempool * pktmbuf_pool[NB_SOCKETS];
 
@@ -432,7 +446,7 @@ signal_exit_now(int sigtype)
 
 }
 
-/*  Freqency scale down timer callback */
+/*  Frequency scale down timer callback */
 static void
 power_timer_cb(__rte_unused struct rte_timer *tim,
 			  __rte_unused void *arg)
@@ -504,7 +518,15 @@ is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 		return -1;
 
 	/* 2. The IP checksum must be correct. */
-	/* this is checked in H/W */
+	/* if this is not checked in H/W, check it. */
+	if ((port_conf.rxmode.offloads & RTE_ETH_RX_OFFLOAD_IPV4_CKSUM) == 0) {
+		uint16_t actual_cksum, expected_cksum;
+		actual_cksum = pkt->hdr_checksum;
+		pkt->hdr_checksum = 0;
+		expected_cksum = rte_ipv4_cksum(pkt);
+		if (actual_cksum != expected_cksum)
+			return -2;
+	}
 
 	/*
 	 * 3. The IP version number must be 4. If the version number is not 4
@@ -716,7 +738,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			dst_port = portid;
 
 		/* 02:00:00:00:00:xx */
-		d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+		d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 		*((uint64_t *)d_addr_bytes) =
 			0x000000000002 + ((uint64_t)dst_port << 40);
 
@@ -728,7 +750,7 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
-				&eth_hdr->s_addr);
+				&eth_hdr->src_addr);
 
 		send_single_packet(m, dst_port);
 	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
@@ -748,13 +770,13 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint16_t portid,
 			dst_port = portid;
 
 		/* 02:00:00:00:00:xx */
-		d_addr_bytes = &eth_hdr->d_addr.addr_bytes[0];
+		d_addr_bytes = &eth_hdr->dst_addr.addr_bytes[0];
 		*((uint64_t *)d_addr_bytes) =
 			0x000000000002 + ((uint64_t)dst_port << 40);
 
 		/* src addr */
 		rte_ether_addr_copy(&ports_eth_addr[dst_port],
-				&eth_hdr->s_addr);
+				&eth_hdr->src_addr);
 
 		send_single_packet(m, dst_port);
 #else
@@ -910,7 +932,7 @@ static int event_register(struct lcore_conf *qconf)
 	return 0;
 }
 
-/* main processing loop */
+/* Main processing loop. 8< */
 static int main_intr_loop(__rte_unused void *dummy)
 {
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
@@ -1073,6 +1095,7 @@ start_rx:
 
 	return 0;
 }
+/* >8 End of main processing loop. */
 
 /* main processing loop */
 static int
@@ -1599,16 +1622,18 @@ print_usage(const char *prgname)
 		"  [--config (port,queue,lcore)[,(port,queue,lcore]]"
 		"  [--high-perf-cores CORELIST"
 		"  [--perf-config (port,queue,hi_perf,lcore_index)[,(port,queue,hi_perf,lcore_index]]"
-		"  [--enable-jumbo [--max-pkt-len PKTLEN]]\n"
+		"  [--max-pkt-len PKTLEN]\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
-		"  -P : enable promiscuous mode\n"
+		"  -P: enable promiscuous mode\n"
+		"  -u: set min/max frequency for uncore to minimum value\n"
+		"  -U: set min/max frequency for uncore to maximum value\n"
+		"  -i (frequency index): set min/max frequency for uncore to specified frequency index\n"
 		"  --config (port,queue,lcore): rx queues configuration\n"
 		"  --high-perf-cores CORELIST: list of high performance cores\n"
 		"  --perf-config: similar as config, cores specified as indices"
 		" for bins containing high or regular performance cores\n"
 		"  --no-numa: optional, disable numa awareness\n"
-		"  --enable-jumbo: enable jumbo frame"
-		" which max packet len is PKTLEN in decimal (64-9600)\n"
+		"  --max-pkt-len PKTLEN: maximum packet length in decimal (64-9600)\n"
 		"  --parse-ptype: parse packet type by software\n"
 		"  --legacy: use legacy interrupt-based scaling\n"
 		"  --empty-poll: enable empty poll detection"
@@ -1617,8 +1642,30 @@ print_usage(const char *prgname)
 		" empty polls, full polls, and core busyness to telemetry\n"
 		" --interrupt-only: enable interrupt-only mode\n"
 		" --pmd-mgmt MODE: enable PMD power management mode. "
-		"Currently supported modes: monitor, pause, scale\n",
+		"Currently supported modes: baseline, monitor, pause, scale\n"
+		"  --max-empty-polls MAX_EMPTY_POLLS: number of empty polls to"
+		" wait before entering sleep state\n"
+		"  --pause-duration DURATION: set the duration, in microseconds,"
+		" of the pause callback\n"
+		"  --scale-freq-min FREQ_MIN: set minimum frequency for scaling mode for"
+		" all application lcores (FREQ_MIN must be in kHz, in increments of 100MHz)\n"
+		"  --scale-freq-max FREQ_MAX: set maximum frequency for scaling mode for"
+		" all application lcores (FREQ_MAX must be in kHz, in increments of 100MHz)\n",
 		prgname);
+}
+
+static int
+parse_int(const char *opt)
+{
+	char *end = NULL;
+	unsigned long val;
+
+	/* parse integer string */
+	val = strtoul(opt, &end, 10);
+	if ((opt[0] == '\0') || (end == NULL) || (*end != '\0'))
+		return -1;
+
+	return val;
 }
 
 static int parse_max_pkt_len(const char *pktlen)
@@ -1635,6 +1682,74 @@ static int parse_max_pkt_len(const char *pktlen)
 		return -1;
 
 	return len;
+}
+
+static int
+parse_uncore_options(enum uncore_choice choice, const char *argument)
+{
+	unsigned int die, pkg, max_pkg, max_die;
+	int ret = 0;
+	max_pkg = rte_power_uncore_get_num_pkgs();
+	if (max_pkg == 0)
+		return -1;
+
+	for (pkg = 0; pkg < max_pkg; pkg++) {
+		max_die = rte_power_uncore_get_num_dies(pkg);
+		if (max_die == 0)
+			return -1;
+		for (die = 0; die < max_die; die++) {
+			ret = rte_power_uncore_init(pkg, die);
+			if (ret == -1) {
+				RTE_LOG(INFO, L3FWD_POWER, "Unable to initialize uncore for pkg %02u die %02u\n"
+				, pkg, die);
+				return ret;
+			}
+			if (choice == UNCORE_MIN) {
+				ret = rte_power_uncore_freq_min(pkg, die);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set the uncore min/max to minimum uncore frequency value for pkg %02u die %02u\n"
+					, pkg, die);
+					return ret;
+				}
+			} else if (choice == UNCORE_MAX) {
+				ret = rte_power_uncore_freq_max(pkg, die);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set uncore min/max to maximum uncore frequency value for pkg %02u die %02u\n"
+					, pkg, die);
+					return ret;
+				}
+			} else if (choice == UNCORE_IDX) {
+				char *ptr = NULL;
+				int frequency_index = strtol(argument, &ptr, 10);
+				if (argument == ptr) {
+					RTE_LOG(INFO, L3FWD_POWER, "Index given is not a valid number.");
+					return -1;
+				}
+				int freq_array_len = rte_power_uncore_get_num_freqs(pkg, die);
+				if (frequency_index > freq_array_len - 1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Frequency index given out of range, please choose a value from 0 to %d.\n",
+					freq_array_len);
+					return -1;
+				}
+				ret = rte_power_set_uncore_freq(pkg, die, frequency_index);
+				if (ret == -1) {
+					RTE_LOG(INFO, L3FWD_POWER,
+					"Unable to set min/max uncore index value for pkg %02u die %02u\n",
+					pkg, die);
+					return ret;
+				}
+			} else {
+				RTE_LOG(INFO, L3FWD_POWER, "Uncore choice provided invalid\n");
+				return -1;
+			}
+		}
+	}
+
+	RTE_LOG(INFO, L3FWD_POWER, "Successfully set max/min/index uncore frequency.\n");
+	return ret;
 }
 
 static int
@@ -1714,6 +1829,7 @@ parse_pmd_mgmt_config(const char *name)
 #define PMD_MGMT_MONITOR "monitor"
 #define PMD_MGMT_PAUSE   "pause"
 #define PMD_MGMT_SCALE   "scale"
+#define PMD_MGMT_BASELINE  "baseline"
 
 	if (strncmp(PMD_MGMT_MONITOR, name, sizeof(PMD_MGMT_MONITOR)) == 0) {
 		pmgmt_type = RTE_POWER_MGMT_TYPE_MONITOR;
@@ -1727,6 +1843,10 @@ parse_pmd_mgmt_config(const char *name)
 
 	if (strncmp(PMD_MGMT_SCALE, name, sizeof(PMD_MGMT_SCALE)) == 0) {
 		pmgmt_type = RTE_POWER_MGMT_TYPE_SCALE;
+		return 0;
+	}
+	if (strncmp(PMD_MGMT_BASELINE, name, sizeof(PMD_MGMT_BASELINE)) == 0) {
+		baseline_enabled = true;
 		return 0;
 	}
 	/* unknown PMD power management mode */
@@ -1748,7 +1868,7 @@ parse_ep_config(const char *q_arg)
 	int hgh_edpi;
 
 	ep_med_edpi = EMPTY_POLL_MED_THRESHOLD;
-	ep_hgh_edpi = EMPTY_POLL_MED_THRESHOLD;
+	ep_hgh_edpi = EMPTY_POLL_HGH_THRESHOLD;
 
 	strlcpy(s, p, sizeof(s));
 
@@ -1771,7 +1891,7 @@ parse_ep_config(const char *q_arg)
 		if (med_edpi > 0)
 			ep_med_edpi = med_edpi;
 
-		if (med_edpi > 0)
+		if (hgh_edpi > 0)
 			ep_hgh_edpi = hgh_edpi;
 
 	} else {
@@ -1788,6 +1908,11 @@ parse_ep_config(const char *q_arg)
 #define CMD_LINE_OPT_INTERRUPT_ONLY "interrupt-only"
 #define CMD_LINE_OPT_TELEMETRY "telemetry"
 #define CMD_LINE_OPT_PMD_MGMT "pmd-mgmt"
+#define CMD_LINE_OPT_MAX_PKT_LEN "max-pkt-len"
+#define CMD_LINE_OPT_MAX_EMPTY_POLLS "max-empty-polls"
+#define CMD_LINE_OPT_PAUSE_DURATION "pause-duration"
+#define CMD_LINE_OPT_SCALE_FREQ_MIN "scale-freq-min"
+#define CMD_LINE_OPT_SCALE_FREQ_MAX "scale-freq-max"
 
 /* Parse the argument given in the command line of the application */
 static int
@@ -1803,19 +1928,23 @@ parse_args(int argc, char **argv)
 		{"perf-config", 1, 0, 0},
 		{"high-perf-cores", 1, 0, 0},
 		{"no-numa", 0, 0, 0},
-		{"enable-jumbo", 0, 0, 0},
+		{CMD_LINE_OPT_MAX_PKT_LEN, 1, 0, 0},
 		{CMD_LINE_OPT_EMPTY_POLL, 1, 0, 0},
 		{CMD_LINE_OPT_PARSE_PTYPE, 0, 0, 0},
 		{CMD_LINE_OPT_LEGACY, 0, 0, 0},
 		{CMD_LINE_OPT_TELEMETRY, 0, 0, 0},
 		{CMD_LINE_OPT_INTERRUPT_ONLY, 0, 0, 0},
 		{CMD_LINE_OPT_PMD_MGMT, 1, 0, 0},
+		{CMD_LINE_OPT_MAX_EMPTY_POLLS, 1, 0, 0},
+		{CMD_LINE_OPT_PAUSE_DURATION, 1, 0, 0},
+		{CMD_LINE_OPT_SCALE_FREQ_MIN, 1, 0, 0},
+		{CMD_LINE_OPT_SCALE_FREQ_MAX, 1, 0, 0},
 		{NULL, 0, 0, 0}
 	};
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "p:l:m:h:P",
+	while ((opt = getopt_long(argc, argvopt, "p:l:m:h:PuUi:",
 				lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -1843,6 +1972,27 @@ parse_args(int argc, char **argv)
 		case 'h':
 			limit = parse_max_pkt_len(optarg);
 			freq_tlb[HGH] = limit;
+			break;
+		case 'u':
+			enabled_uncore = parse_uncore_options(UNCORE_MIN, NULL);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+		case 'U':
+			enabled_uncore = parse_uncore_options(UNCORE_MAX, NULL);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
+			break;
+		case 'i':
+			enabled_uncore = parse_uncore_options(UNCORE_IDX, optarg);
+			if (enabled_uncore < 0) {
+				print_usage(prgname);
+				return -1;
+			}
 			break;
 		/* long options */
 		case 0:
@@ -1947,36 +2097,10 @@ parse_args(int argc, char **argv)
 			}
 
 			if (!strncmp(lgopts[option_index].name,
-					"enable-jumbo", 12)) {
-				struct option lenopts =
-					{"max-pkt-len", required_argument, \
-									0, 0};
-
-				printf("jumbo frame is enabled \n");
-				port_conf.rxmode.offloads |=
-						DEV_RX_OFFLOAD_JUMBO_FRAME;
-				port_conf.txmode.offloads |=
-						DEV_TX_OFFLOAD_MULTI_SEGS;
-
-				/**
-				 * if no max-pkt-len set, use the default value
-				 * RTE_ETHER_MAX_LEN
-				 */
-				if (0 == getopt_long(argc, argvopt, "",
-						&lenopts, &option_index)) {
-					ret = parse_max_pkt_len(optarg);
-					if ((ret < 64) ||
-						(ret > MAX_JUMBO_PKT_LEN)){
-						printf("invalid packet "
-								"length\n");
-						print_usage(prgname);
-						return -1;
-					}
-					port_conf.rxmode.max_rx_pkt_len = ret;
-				}
-				printf("set jumbo frame "
-					"max packet length to %u\n",
-				(unsigned int)port_conf.rxmode.max_rx_pkt_len);
+					CMD_LINE_OPT_MAX_PKT_LEN,
+					sizeof(CMD_LINE_OPT_MAX_PKT_LEN))) {
+				printf("Custom frame size is configured\n");
+				max_pkt_len = parse_max_pkt_len(optarg);
 			}
 
 			if (!strncmp(lgopts[option_index].name,
@@ -1984,6 +2108,34 @@ parse_args(int argc, char **argv)
 				     sizeof(CMD_LINE_OPT_PARSE_PTYPE))) {
 				printf("soft parse-ptype is enabled\n");
 				parse_ptype = 1;
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_MAX_EMPTY_POLLS,
+					sizeof(CMD_LINE_OPT_MAX_EMPTY_POLLS))) {
+				printf("Maximum empty polls configured\n");
+				max_empty_polls = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_PAUSE_DURATION,
+					sizeof(CMD_LINE_OPT_PAUSE_DURATION))) {
+				printf("Pause duration configured\n");
+				pause_duration = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_SCALE_FREQ_MIN,
+					sizeof(CMD_LINE_OPT_SCALE_FREQ_MIN))) {
+				printf("Scaling frequency minimum configured\n");
+				scale_freq_min = parse_int(optarg);
+			}
+
+			if (!strncmp(lgopts[option_index].name,
+					CMD_LINE_OPT_SCALE_FREQ_MAX,
+					sizeof(CMD_LINE_OPT_SCALE_FREQ_MAX))) {
+				printf("Scaling frequency maximum configured\n");
+				scale_freq_max = parse_int(optarg);
 			}
 
 			break;
@@ -2215,7 +2367,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -2313,7 +2465,7 @@ init_power_library(void)
 static int
 deinit_power_library(void)
 {
-	unsigned int lcore_id;
+	unsigned int lcore_id, max_pkg, max_die, die, pkg;
 	int ret = 0;
 
 	RTE_LCORE_FOREACH(lcore_id) {
@@ -2324,6 +2476,26 @@ deinit_power_library(void)
 				"Library deinitialization failed on core %u\n",
 				lcore_id);
 			return ret;
+		}
+	}
+
+	/* if uncore option was set */
+	if (enabled_uncore == 0) {
+		max_pkg = rte_power_uncore_get_num_pkgs();
+		if (max_pkg == 0)
+			return -1;
+		for (pkg = 0; pkg < max_pkg; pkg++) {
+			max_die = rte_power_uncore_get_num_dies(pkg);
+			if (max_die == 0)
+				return -1;
+			for (die = 0; die < max_die; die++) {
+				ret = rte_power_uncore_exit(pkg, die);
+				if (ret < 0) {
+					RTE_LOG(ERR, L3FWD_POWER, "Failed to exit uncore deinit successfully for pkg %02u die %02u\n"
+						, pkg, die);
+					return -1;
+				}
+			}
 		}
 	}
 	return ret;
@@ -2369,7 +2541,7 @@ update_telemetry(__rte_unused struct rte_timer *tim,
 	ret = rte_metrics_update_values(RTE_METRICS_GLOBAL, telstats_index,
 					values, RTE_DIM(values));
 	if (ret < 0)
-		RTE_LOG(WARNING, POWER, "failed to update metrcis\n");
+		RTE_LOG(WARNING, POWER, "failed to update metrics\n");
 }
 
 static int
@@ -2498,6 +2670,42 @@ mode_to_str(enum appmode mode)
 	}
 }
 
+static uint32_t
+eth_dev_get_overhead_len(uint32_t max_rx_pktlen, uint16_t max_mtu)
+{
+	uint32_t overhead_len;
+
+	if (max_mtu != UINT16_MAX && max_rx_pktlen > max_mtu)
+		overhead_len = max_rx_pktlen - max_mtu;
+	else
+		overhead_len = RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
+
+	return overhead_len;
+}
+
+static int
+config_port_max_pkt_len(struct rte_eth_conf *conf,
+		struct rte_eth_dev_info *dev_info)
+{
+	uint32_t overhead_len;
+
+	if (max_pkt_len == 0)
+		return 0;
+
+	if (max_pkt_len < RTE_ETHER_MIN_LEN || max_pkt_len > MAX_JUMBO_PKT_LEN)
+		return -1;
+
+	overhead_len = eth_dev_get_overhead_len(dev_info->max_rx_pktlen,
+			dev_info->max_mtu);
+	conf->rxmode.mtu = max_pkt_len - overhead_len;
+
+	if (conf->rxmode.mtu > RTE_ETHER_MTU)
+		conf->txmode.offloads |= RTE_ETH_TX_OFFLOAD_MULTI_SEGS;
+
+	return 0;
+}
+
+/* Power library initialized in the main routine. 8< */
 int
 main(int argc, char **argv)
 {
@@ -2515,9 +2723,6 @@ main(int argc, char **argv)
 	uint16_t portid;
 	const char *ptr_strings[NUM_TELSTATS];
 
-	/* catch SIGINT and restore cpufreq governor to ondemand */
-	signal(SIGINT, signal_exit_now);
-
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
 	if (ret < 0)
@@ -2525,8 +2730,14 @@ main(int argc, char **argv)
 	argc -= ret;
 	argv += ret;
 
+	/* catch SIGINT and restore cpufreq governor to ondemand */
+	signal(SIGINT, signal_exit_now);
+
 	/* init RTE timer library to be used late */
 	rte_timer_subsystem_init();
+
+	/* if we're running pmd-mgmt mode, don't default to baseline mode */
+	baseline_enabled = false;
 
 	/* parse application arguments (after the EAL ones) */
 	ret = parse_args(argc, argv);
@@ -2611,9 +2822,15 @@ main(int argc, char **argv)
 				"Error during getting device (port %u) info: %s\n",
 				portid, strerror(-ret));
 
-		if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+		ret = config_port_max_pkt_len(&local_port_conf, &dev_info);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Invalid max packet length: %u (port %u)\n",
+				max_pkt_len, portid);
+
+		if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 			local_port_conf.txmode.offloads |=
-				DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+				RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 		local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 			dev_info.flow_type_rss_offloads;
@@ -2625,6 +2842,11 @@ main(int argc, char **argv)
 				port_conf.rx_adv_conf.rss_conf.rss_hf,
 				local_port_conf.rx_adv_conf.rss_conf.rss_hf);
 		}
+
+		if (local_port_conf.rx_adv_conf.rss_conf.rss_hf == 0)
+			local_port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_NONE;
+		local_port_conf.rxmode.offloads &= dev_info.rx_offload_capa;
+		port_conf.rxmode.offloads = local_port_conf.rxmode.offloads;
 
 		ret = rte_eth_dev_configure(portid, nb_rx_queue,
 					(uint16_t)n_tx_queue, &local_port_conf);
@@ -2723,12 +2945,6 @@ main(int argc, char **argv)
 		printf("\nInitializing rx queues on lcore %u ... ", lcore_id );
 		fflush(stdout);
 
-		/* PMD power management mode can only do 1 queue per core */
-		if (app_mode == APP_MODE_PMD_MGMT && qconf->n_rx_queue > 1) {
-			rte_exit(EXIT_FAILURE,
-				"In PMD power management mode, only one queue per lcore is allowed\n");
-		}
-
 		/* init RX queues */
 		for(queue = 0; queue < qconf->n_rx_queue; ++queue) {
 			struct rte_eth_rxconf rxq_conf;
@@ -2767,7 +2983,29 @@ main(int argc, char **argv)
 						 "Fail to add ptype cb\n");
 			}
 
-			if (app_mode == APP_MODE_PMD_MGMT) {
+			if (app_mode == APP_MODE_PMD_MGMT && !baseline_enabled) {
+				/* Set power_pmd_mgmt configs passed by user */
+				rte_power_pmd_mgmt_set_emptypoll_max(max_empty_polls);
+				ret = rte_power_pmd_mgmt_set_pause_duration(pause_duration);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting pause_duration: err=%d, lcore=%d\n",
+							ret, lcore_id);
+
+				ret = rte_power_pmd_mgmt_set_scaling_freq_min(lcore_id,
+						scale_freq_min);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting scaling freq min: err=%d, lcore=%d\n",
+							ret, lcore_id);
+
+				ret = rte_power_pmd_mgmt_set_scaling_freq_max(lcore_id,
+						scale_freq_max);
+				if (ret < 0)
+					rte_exit(EXIT_FAILURE,
+						"Error setting scaling freq max: err=%d, lcore %d\n",
+							ret, lcore_id);
+
 				ret = rte_power_ethdev_pmgmt_queue_enable(
 						lcore_id, portid, queueid,
 						pmgmt_type);
@@ -2778,6 +3016,7 @@ main(int argc, char **argv)
 			}
 		}
 	}
+	/* >8 End of power library initialization. */
 
 	printf("\n");
 

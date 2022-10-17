@@ -7,8 +7,9 @@
 # for Solarflare) and Solarflare Communications, Inc.
 
 if is_windows
-	build = false
-	reason = 'not supported on Windows'
+    build = false
+    reason = 'not supported on Windows'
 endif
 
 sources = files('rte_mempool_bucket.c')
+pmd_supports_disable_iova_as_pa = true

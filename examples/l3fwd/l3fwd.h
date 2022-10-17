@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2010-2016 Intel Corporation
+ * Copyright(c) 2010-2021 Intel Corporation
  */
 
 #ifndef __L3_FWD_H__
@@ -7,6 +7,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_vect.h>
+#include <rte_acl.h>
 
 #define DO_RFC_1812_CHECKS
 
@@ -19,8 +20,8 @@
 /*
  * Configurable number of RX/TX ring descriptors
  */
-#define RTE_TEST_RX_DESC_DEFAULT 1024
-#define RTE_TEST_TX_DESC_DEFAULT 1024
+#define RX_DESC_DEFAULT 1024
+#define TX_DESC_DEFAULT 1024
 
 #define MAX_PKT_BURST     32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
@@ -28,6 +29,8 @@
 #define MEMPOOL_CACHE_SIZE 256
 #define MAX_RX_QUEUE_PER_LCORE 16
 
+#define VECTOR_SIZE_DEFAULT   MAX_PKT_BURST
+#define VECTOR_TMO_NS_DEFAULT 1E6 /* 1ms */
 /*
  * Try to avoid TX buffering if we have at least MAX_TX_BURST packets to send.
  */
@@ -41,8 +44,6 @@
 /* Used to mark destination port as 'invalid'. */
 #define	BAD_PORT ((uint16_t)-1)
 
-#define FWDSTEP	4
-
 /* replace first 12B of the ethernet header. */
 #define	MASK_ETH 0x3f
 
@@ -54,7 +55,18 @@
 /* 32-bit has less address-space for hugepage memory, limit to 1M entries */
 #define L3FWD_HASH_ENTRIES		(1024*1024*1)
 #endif
-#define HASH_ENTRY_NUMBER_DEFAULT	4
+#define HASH_ENTRY_NUMBER_DEFAULT	16
+
+struct parm_cfg {
+	const char *rule_ipv4_name;
+	const char *rule_ipv6_name;
+	enum rte_acl_classify_alg alg;
+};
+
+struct acl_algorithms {
+	const char *name;
+	enum rte_acl_classify_alg alg;
+};
 
 struct mbuf_table {
 	uint16_t len;
@@ -79,6 +91,10 @@ struct lcore_conf {
 
 extern volatile bool force_quit;
 
+/* RX and TX queue depths */
+extern uint16_t nb_rxd;
+extern uint16_t nb_txd;
+
 /* ethernet addresses of ports */
 extern uint64_t dest_eth_addr[RTE_MAX_ETHPORTS];
 extern struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
@@ -93,6 +109,12 @@ extern uint32_t hash_entry_number;
 extern xmm_t val_eth[RTE_MAX_ETHPORTS];
 
 extern struct lcore_conf lcore_conf[RTE_MAX_LCORE];
+
+extern struct parm_cfg parm_config;
+
+extern struct acl_algorithms acl_alg[];
+
+extern uint32_t max_pkt_len;
 
 /* Send burst of packets on an output interface */
 static inline int
@@ -177,15 +199,30 @@ is_valid_ipv4_pkt(struct rte_ipv4_hdr *pkt, uint32_t link_len)
 }
 #endif /* DO_RFC_1812_CHECKS */
 
+enum rte_acl_classify_alg
+parse_acl_alg(const char *alg);
+
+int
+usage_acl_alg(char *buf, size_t sz);
+
 int
 init_mem(uint16_t portid, unsigned int nb_mbuf);
 
-/* Function pointers for LPM or EM functionality. */
+int config_port_max_pkt_len(struct rte_eth_conf *conf,
+			    struct rte_eth_dev_info *dev_info);
+
+/* Function pointers for ACL, LPM, EM or FIB functionality. */
+void
+setup_acl(const int socketid);
+
 void
 setup_lpm(const int socketid);
 
 void
 setup_hash(const int socketid);
+
+void
+setup_fib(const int socketid);
 
 int
 em_check_ptype(int portid);
@@ -202,10 +239,16 @@ lpm_cb_parse_ptype(uint16_t port, uint16_t queue, struct rte_mbuf *pkts[],
 		   uint16_t nb_pkts, uint16_t max_pkts, void *user_param);
 
 int
+acl_main_loop(__rte_unused void *dummy);
+
+int
 em_main_loop(__rte_unused void *dummy);
 
 int
 lpm_main_loop(__rte_unused void *dummy);
+
+int
+fib_main_loop(__rte_unused void *dummy);
 
 int
 lpm_event_main_loop_tx_d(__rte_unused void *dummy);
@@ -215,6 +258,14 @@ int
 lpm_event_main_loop_tx_q(__rte_unused void *dummy);
 int
 lpm_event_main_loop_tx_q_burst(__rte_unused void *dummy);
+int
+lpm_event_main_loop_tx_d_vector(__rte_unused void *dummy);
+int
+lpm_event_main_loop_tx_d_burst_vector(__rte_unused void *dummy);
+int
+lpm_event_main_loop_tx_q_vector(__rte_unused void *dummy);
+int
+lpm_event_main_loop_tx_q_burst_vector(__rte_unused void *dummy);
 
 int
 em_event_main_loop_tx_d(__rte_unused void *dummy);
@@ -224,9 +275,40 @@ int
 em_event_main_loop_tx_q(__rte_unused void *dummy);
 int
 em_event_main_loop_tx_q_burst(__rte_unused void *dummy);
+int
+em_event_main_loop_tx_d_vector(__rte_unused void *dummy);
+int
+em_event_main_loop_tx_d_burst_vector(__rte_unused void *dummy);
+int
+em_event_main_loop_tx_q_vector(__rte_unused void *dummy);
+int
+em_event_main_loop_tx_q_burst_vector(__rte_unused void *dummy);
+
+int
+fib_event_main_loop_tx_d(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_d_burst(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_q(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_q_burst(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_d_vector(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_d_burst_vector(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_q_vector(__rte_unused void *dummy);
+int
+fib_event_main_loop_tx_q_burst_vector(__rte_unused void *dummy);
 
 
-/* Return ipv4/ipv6 fwd lookup struct for LPM or EM. */
+/* Return ipv4/ipv6 fwd lookup struct for ACL, LPM, EM or FIB. */
+void *
+acl_get_ipv4_l3fwd_lookup_struct(const int socketid);
+
+void *
+acl_get_ipv6_l3fwd_lookup_struct(const int socketid);
+
 void *
 em_get_ipv4_l3fwd_lookup_struct(const int socketid);
 
@@ -238,5 +320,11 @@ lpm_get_ipv4_l3fwd_lookup_struct(const int socketid);
 
 void *
 lpm_get_ipv6_l3fwd_lookup_struct(const int socketid);
+
+void *
+fib_get_ipv4_l3fwd_lookup_struct(const int socketid);
+
+void *
+fib_get_ipv6_l3fwd_lookup_struct(const int socketid);
 
 #endif  /* __L3_FWD_H__ */

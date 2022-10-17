@@ -105,18 +105,39 @@ The following is an overview of some key Vhost API functions:
 
   - ``RTE_VHOST_USER_ASYNC_COPY``
 
-    Asynchronous data path will be enabled when this flag is set. Async data
-    path allows applications to register async copy devices (typically
-    hardware DMA channels) to the vhost queues. Vhost leverages the copy
-    device registered to free CPU from memory copy operations. A set of
-    async data path APIs are defined for DPDK applications to make use of
-    the async capability. Only packets enqueued/dequeued by async APIs are
-    processed through the async data path.
+    Asynchronous data path will be enabled when this flag is set. Async
+    data path allows applications to enable DMA acceleration for vhost
+    queues. Vhost leverages the registered DMA channels to free CPU from
+    memory copy operations in data path. A set of async data path APIs are
+    defined for DPDK applications to make use of the async capability. Only
+    packets enqueued/dequeued by async APIs are processed through the async
+    data path.
 
     Currently this feature is only implemented on split ring enqueue data
     path.
 
     It is disabled by default.
+
+  - ``RTE_VHOST_USER_NET_COMPLIANT_OL_FLAGS``
+
+    Since v16.04, the vhost library forwards checksum and gso requests for
+    packets received from a virtio driver by filling Tx offload metadata in
+    the mbuf. This behavior is inconsistent with other drivers but it is left
+    untouched for existing applications that might rely on it.
+
+    This flag disables the legacy behavior and instead ask vhost to simply
+    populate Rx offload metadata in the mbuf.
+
+    It is disabled by default.
+
+  - ``RTE_VHOST_USER_NET_STATS_ENABLE``
+
+  Per-virtqueue statistics collection will be enabled when this flag is set.
+  When enabled, the application may use rte_vhost_stats_get_names() and
+  rte_vhost_stats_get() to collect statistics, and rte_vhost_stats_reset() to
+  reset them.
+
+  It is disabled by default
 
 * ``rte_vhost_driver_set_features(path, features)``
 
@@ -206,60 +227,101 @@ The following is an overview of some key Vhost API functions:
 
   Enable or disable zero copy feature of the vhost crypto backend.
 
-* ``rte_vhost_async_channel_register(vid, queue_id, features, ops)``
+* ``rte_vhost_async_dma_configure(dma_id, vchan_id)``
 
-  Register a vhost queue with async copy device channel.
-  Following device ``features`` must be specified together with the
-  registration:
+  Tell vhost which DMA vChannel is going to use. This function needs to
+  be called before register async data-path for vring.
 
-  * ``async_inorder``
+* ``rte_vhost_async_channel_register(vid, queue_id)``
 
-    Async copy device can guarantee the ordering of copy completion
-    sequence. Copies are completed in the same order with that at
-    the submission time.
+  Register async DMA acceleration for a vhost queue after vring is enabled.
 
-    Currently, only ``async_inorder`` capable device is supported by vhost.
+* ``rte_vhost_async_channel_register_thread_unsafe(vid, queue_id)``
 
-  * ``async_threshold``
+  Register async DMA acceleration for a vhost queue without performing
+  any locking.
 
-    The copy length (in bytes) below which CPU copy will be used even if
-    applications call async vhost APIs to enqueue/dequeue data.
-
-    Typical value is 512~1024 depending on the async device capability.
-
-  Applications must provide following ``ops`` callbacks for vhost lib to
-  work with the async copy devices:
-
-  * ``transfer_data(vid, queue_id, descs, opaque_data, count)``
-
-    vhost invokes this function to submit copy data to the async devices.
-    For non-async_inorder capable devices, ``opaque_data`` could be used
-    for identifying the completed packets.
-
-  * ``check_completed_copies(vid, queue_id, opaque_data, max_packets)``
-
-    vhost invokes this function to get the copy data completed by async
-    devices.
+  This function is only safe to call in vhost callback functions
+  (i.e., struct rte_vhost_device_ops).
 
 * ``rte_vhost_async_channel_unregister(vid, queue_id)``
 
-  Unregister the async copy device channel from a vhost queue.
+  Unregister the async DMA acceleration from a vhost queue.
+  Unregistration will fail, if the vhost queue has in-flight
+  packets that are not completed.
 
-* ``rte_vhost_submit_enqueue_burst(vid, queue_id, pkts, count, comp_pkts, comp_count)``
+  Unregister async DMA acceleration in vring_state_changed() may
+  fail, as this API tries to acquire the spinlock of vhost
+  queue. The recommended way is to unregister async copy
+  devices for all vhost queues in destroy_device(), when a
+  virtio device is paused or shut down.
+
+* ``rte_vhost_async_channel_unregister_thread_unsafe(vid, queue_id)``
+
+  Unregister async DMA acceleration for a vhost queue without performing
+  any locking.
+
+  This function is only safe to call in vhost callback functions
+  (i.e., struct rte_vhost_device_ops).
+
+* ``rte_vhost_submit_enqueue_burst(vid, queue_id, pkts, count, dma_id, vchan_id)``
 
   Submit an enqueue request to transmit ``count`` packets from host to guest
-  by async data path. Successfully enqueued packets can be transfer completed
-  or being occupied by DMA engines; transfer completed packets are returned in
-  ``comp_pkts``, but others are not guaranteed to finish, when this API
-  call returns.
+  by async data path. Applications must not free the packets submitted for
+  enqueue until the packets are completed.
 
-  Applications must not free the packets submitted for enqueue until the
-  packets are completed.
-
-* ``rte_vhost_poll_enqueue_completed(vid, queue_id, pkts, count)``
+* ``rte_vhost_poll_enqueue_completed(vid, queue_id, pkts, count, dma_id, vchan_id)``
 
   Poll enqueue completion status from async data path. Completed packets
   are returned to applications through ``pkts``.
+
+* ``rte_vhost_async_get_inflight(vid, queue_id)``
+
+  This function returns the amount of in-flight packets for the vhost
+  queue using async acceleration.
+
+ * ``rte_vhost_async_get_inflight_thread_unsafe(vid, queue_id)``
+
+  Get the number of inflight packets for a vhost queue without performing
+  any locking. It should only be used within the vhost ops, which already
+  holds the lock.
+
+* ``rte_vhost_clear_queue_thread_unsafe(vid, queue_id, **pkts, count, dma_id, vchan_id)``
+
+  Clear in-flight packets which are submitted to async channel in vhost
+  async data path without performing locking on virtqueue. Completed
+  packets are returned to applications through ``pkts``.
+
+* ``rte_vhost_clear_queue(vid, queue_id, **pkts, count, dma_id, vchan_id)``
+
+  Clear in-flight packets which are submitted to async channel in vhost async data
+  path. Completed packets are returned to applications through ``pkts``.
+
+* ``rte_vhost_vring_stats_get_names(int vid, uint16_t queue_id, struct rte_vhost_stat_name *names, unsigned int size)``
+
+  This function returns the names of the queue statistics. It requires
+  statistics collection to be enabled at registration time.
+
+* ``rte_vhost_vring_stats_get(int vid, uint16_t queue_id, struct rte_vhost_stat *stats, unsigned int n)``
+
+  This function returns the queue statistics. It requires statistics
+  collection to be enabled at registration time.
+
+* ``rte_vhost_vring_stats_reset(int vid, uint16_t queue_id)``
+
+  This function resets the queue statistics. It requires statistics
+  collection to be enabled at registration time.
+
+* ``rte_vhost_async_try_dequeue_burst(vid, queue_id, mbuf_pool, pkts, count,
+  nr_inflight, dma_id, vchan_id)``
+
+  Receive ``count`` packets from guest to host in async data path,
+  and store them at ``pkts``.
+
+* ``rte_vhost_driver_get_vdpa_dev_type(path, type)``
+
+  Get device type of vDPA device, such as VDPA_DEVICE_TYPE_NET,
+  VDPA_DEVICE_TYPE_BLK.
 
 Vhost-user Implementations
 --------------------------
@@ -289,7 +351,7 @@ vhost-user implementation has two options:
 
      * The vhost supported features must be exactly the same before and
        after the restart. For example, if TSO is disabled and then enabled,
-       nothing will work and issues undefined might happen.
+       nothing will work and undefined issues might happen.
 
 No matter which mode is used, once a connection is established, DPDK
 vhost-user will start receiving and processing vhost messages from QEMU.
@@ -320,12 +382,12 @@ Guest memory requirement
 
 * Memory pre-allocation
 
-  For non-async data path, guest memory pre-allocation is not a
-  must. This can help save of memory. If users really want the guest memory
-  to be pre-allocated (e.g., for performance reason), we can add option
-  ``-mem-prealloc`` when starting QEMU. Or, we can lock all memory at vhost
-  side which will force memory to be allocated when mmap at vhost side;
-  option --mlockall in ovs-dpdk is an example in hand.
+  For non-async data path guest memory pre-allocation is not a
+  must but can help save memory. To do this we can add option
+  ``-mem-prealloc`` when starting QEMU, or we can lock all memory at vhost
+  side which will force memory to be allocated when it calls mmap
+  (option --mlockall in ovs-dpdk is an example in hand).
+
 
   For async data path, we force the VM memory to be pre-allocated at vhost
   lib when mapping the guest memory; and also we need to lock the memory to
@@ -333,8 +395,8 @@ Guest memory requirement
 
 * Memory sharing
 
-  Make sure ``share=on`` QEMU option is given. vhost-user will not work with
-  a QEMU version without shared memory mapping.
+  Make sure ``share=on`` QEMU option is given. The vhost-user will not work with
+  a QEMU instance without shared memory mapping.
 
 Vhost supported vSwitch reference
 ---------------------------------
@@ -400,3 +462,43 @@ Finally, a set of device ops is defined for device specific operations:
 * ``get_notify_area``
 
   Called to get the notify area info of the queue.
+
+Vhost asynchronous data path
+----------------------------
+
+Vhost asynchronous data path leverages DMA devices to offload memory
+copies from the CPU and it is implemented in an asynchronous way. It
+enables applications, like OVS, to save CPU cycles and hide memory copy
+overhead, thus achieving higher throughput.
+
+Vhost doesn't manage DMA devices and applications, like OVS, need to
+manage and configure DMA devices. Applications need to tell vhost what
+DMA devices to use in every data path function call. This design enables
+the flexibility for applications to dynamically use DMA channels in
+different function modules, not limited in vhost.
+
+In addition, vhost supports M:N mapping between vrings and DMA virtual
+channels. Specifically, one vring can use multiple different DMA channels
+and one DMA channel can be shared by multiple vrings at the same time.
+The reason of enabling one vring to use multiple DMA channels is that
+it's possible that more than one dataplane threads enqueue packets to
+the same vring with their own DMA virtual channels. Besides, the number
+of DMA devices is limited. For the purpose of scaling, it's necessary to
+support sharing DMA channels among vrings.
+
+* Async enqueue API usage
+
+  In async enqueue path, rte_vhost_poll_enqueue_completed() needs to be
+  called in time to notify the guest of DMA copy completed packets.
+  Moreover, calling rte_vhost_submit_enqueue_burst() all the time but
+  not poll completed will cause the DMA ring to be full, which will
+  result in packet loss eventually.
+
+* Recommended IOVA mode in async datapath
+
+  When DMA devices are bound to VFIO driver, VA mode is recommended.
+  For PA mode, page by page mapping may exceed IOMMU's max capability,
+  better to use 1G guest hugepage.
+
+  For UIO driver or kernel driver, any VFIO related error messages
+  can be ignored.

@@ -16,13 +16,6 @@
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_ethdev.h>
-#include <rte_swx_port_ethdev.h>
-#include <rte_swx_port_fd.h>
-#include <rte_swx_port_ring.h>
-#include <rte_swx_port_source_sink.h>
-#include <rte_swx_table_em.h>
-#include <rte_swx_table_wm.h>
-#include <rte_swx_pipeline.h>
 #include <rte_swx_ctl.h>
 
 #include "obj.h"
@@ -43,24 +36,12 @@ TAILQ_HEAD(link_list, link);
 TAILQ_HEAD(ring_list, ring);
 
 /*
- * tap
- */
-TAILQ_HEAD(tap_list, tap);
-
-/*
- * pipeline
- */
-TAILQ_HEAD(pipeline_list, pipeline);
-
-/*
  * obj
  */
 struct obj {
 	struct mempool_list mempool_list;
 	struct link_list link_list;
 	struct ring_list ring_list;
-	struct pipeline_list pipeline_list;
-	struct tap_list tap_list;
 };
 
 /*
@@ -133,9 +114,8 @@ mempool_find(struct obj *obj, const char *name)
 static struct rte_eth_conf port_conf_default = {
 	.link_speeds = 0,
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = 9000, /* Jumbo frame max packet len */
-		.split_hdr_size = 0, /* Header split buffer size */
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
+		.mtu = 9000 - (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN), /* Jumbo frame MTU */
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
@@ -145,12 +125,12 @@ static struct rte_eth_conf port_conf_default = {
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.lpbk_mode = 0,
 };
 
-#define RETA_CONF_SIZE     (ETH_RSS_RETA_SIZE_512 / RTE_RETA_GROUP_SIZE)
+#define RETA_CONF_SIZE     (RTE_ETH_RSS_RETA_SIZE_512 / RTE_ETH_RETA_GROUP_SIZE)
 
 static int
 rss_setup(uint16_t port_id,
@@ -165,11 +145,11 @@ rss_setup(uint16_t port_id,
 	memset(reta_conf, 0, sizeof(reta_conf));
 
 	for (i = 0; i < reta_size; i++)
-		reta_conf[i / RTE_RETA_GROUP_SIZE].mask = UINT64_MAX;
+		reta_conf[i / RTE_ETH_RETA_GROUP_SIZE].mask = UINT64_MAX;
 
 	for (i = 0; i < reta_size; i++) {
-		uint32_t reta_id = i / RTE_RETA_GROUP_SIZE;
-		uint32_t reta_pos = i % RTE_RETA_GROUP_SIZE;
+		uint32_t reta_id = i / RTE_ETH_RETA_GROUP_SIZE;
+		uint32_t reta_pos = i % RTE_ETH_RETA_GROUP_SIZE;
 		uint32_t rss_qs_pos = i % rss->n_queues;
 
 		reta_conf[reta_id].reta[reta_pos] =
@@ -194,7 +174,7 @@ link_create(struct obj *obj, const char *name, struct link_params *params)
 	struct mempool *mempool;
 	uint32_t cpu_id, i;
 	int status;
-	uint16_t port_id;
+	uint16_t port_id = 0;
 
 	/* Check input params */
 	if ((name == NULL) ||
@@ -206,16 +186,9 @@ link_create(struct obj *obj, const char *name, struct link_params *params)
 		(params->tx.queue_size == 0))
 		return NULL;
 
-	port_id = params->port_id;
-	if (params->dev_name) {
-		status = rte_eth_dev_get_port_by_name(params->dev_name,
-			&port_id);
-
-		if (status)
-			return NULL;
-	} else
-		if (!rte_eth_dev_is_valid_port(port_id))
-			return NULL;
+	status = rte_eth_dev_get_port_by_name(name, &port_id);
+	if (status)
+		return NULL;
 
 	if (rte_eth_dev_info_get(port_id, &port_info) != 0)
 		return NULL;
@@ -227,7 +200,7 @@ link_create(struct obj *obj, const char *name, struct link_params *params)
 	rss = params->rx.rss;
 	if (rss) {
 		if ((port_info.reta_size == 0) ||
-			(port_info.reta_size > ETH_RSS_RETA_SIZE_512))
+			(port_info.reta_size > RTE_ETH_RSS_RETA_SIZE_512))
 			return NULL;
 
 		if ((rss->n_queues == 0) ||
@@ -245,9 +218,9 @@ link_create(struct obj *obj, const char *name, struct link_params *params)
 	/* Port */
 	memcpy(&port_conf, &port_conf_default, sizeof(port_conf));
 	if (rss) {
-		port_conf.rxmode.mq_mode = ETH_MQ_RX_RSS;
+		port_conf.rxmode.mq_mode = RTE_ETH_MQ_RX_RSS;
 		port_conf.rx_adv_conf.rss_conf.rss_hf =
-			(ETH_RSS_IP | ETH_RSS_TCP | ETH_RSS_UDP) &
+			(RTE_ETH_RSS_IP | RTE_ETH_RSS_TCP | RTE_ETH_RSS_UDP) &
 			port_info.flow_type_rss_offloads;
 	}
 
@@ -328,7 +301,6 @@ link_create(struct obj *obj, const char *name, struct link_params *params)
 	/* Node fill in */
 	strlcpy(link->name, name, sizeof(link->name));
 	link->port_id = port_id;
-	rte_eth_dev_get_name_by_port(port_id, link->dev_name);
 	link->n_rxq = params->rx.n_queues;
 	link->n_txq = params->tx.n_queues;
 
@@ -356,7 +328,7 @@ link_is_up(struct obj *obj, const char *name)
 	if (rte_eth_link_get(link->port_id, &link_params) < 0)
 		return 0;
 
-	return (link_params.link_status == ETH_LINK_DOWN) ? 0 : 1;
+	return (link_params.link_status == RTE_ETH_LINK_DOWN) ? 0 : 1;
 }
 
 struct link *
@@ -438,211 +410,6 @@ ring_find(struct obj *obj, const char *name)
 }
 
 /*
- * tap
- */
-#define TAP_DEV		"/dev/net/tun"
-
-struct tap *
-tap_find(struct obj *obj, const char *name)
-{
-	struct tap *tap;
-
-	if (!obj || !name)
-		return NULL;
-
-	TAILQ_FOREACH(tap, &obj->tap_list, node)
-		if (strcmp(tap->name, name) == 0)
-			return tap;
-
-	return NULL;
-}
-
-struct tap *
-tap_next(struct obj *obj, struct tap *tap)
-{
-	return (tap == NULL) ?
-		TAILQ_FIRST(&obj->tap_list) : TAILQ_NEXT(tap, node);
-}
-
-#ifndef RTE_EXEC_ENV_LINUX
-
-struct tap *
-tap_create(struct obj *obj __rte_unused, const char *name __rte_unused)
-{
-	return NULL;
-}
-
-#else
-
-struct tap *
-tap_create(struct obj *obj, const char *name)
-{
-	struct tap *tap;
-	struct ifreq ifr;
-	int fd, status;
-
-	/* Check input params */
-	if ((name == NULL) ||
-		tap_find(obj, name))
-		return NULL;
-
-	/* Resource create */
-	fd = open(TAP_DEV, O_RDWR | O_NONBLOCK);
-	if (fd < 0)
-		return NULL;
-
-	memset(&ifr, 0, sizeof(ifr));
-	ifr.ifr_flags = IFF_TAP | IFF_NO_PI; /* No packet information */
-	strlcpy(ifr.ifr_name, name, IFNAMSIZ);
-
-	status = ioctl(fd, TUNSETIFF, (void *) &ifr);
-	if (status < 0) {
-		close(fd);
-		return NULL;
-	}
-
-	/* Node allocation */
-	tap = calloc(1, sizeof(struct tap));
-	if (tap == NULL) {
-		close(fd);
-		return NULL;
-	}
-	/* Node fill in */
-	strlcpy(tap->name, name, sizeof(tap->name));
-	tap->fd = fd;
-
-	/* Node add to list */
-	TAILQ_INSERT_TAIL(&obj->tap_list, tap, node);
-
-	return tap;
-}
-
-#endif
-
-/*
- * pipeline
- */
-#ifndef PIPELINE_MSGQ_SIZE
-#define PIPELINE_MSGQ_SIZE                                 64
-#endif
-
-struct pipeline *
-pipeline_create(struct obj *obj, const char *name, int numa_node)
-{
-	struct pipeline *pipeline;
-	struct rte_swx_pipeline *p = NULL;
-	int status;
-
-	/* Check input params */
-	if ((name == NULL) ||
-		pipeline_find(obj, name))
-		return NULL;
-
-	/* Resource create */
-	status = rte_swx_pipeline_config(&p, numa_node);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_in_type_register(p,
-		"ethdev",
-		&rte_swx_port_ethdev_reader_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_out_type_register(p,
-		"ethdev",
-		&rte_swx_port_ethdev_writer_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_in_type_register(p,
-		"ring",
-		&rte_swx_port_ring_reader_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_out_type_register(p,
-		"ring",
-		&rte_swx_port_ring_writer_ops);
-	if (status)
-		goto error;
-
-#ifdef RTE_PORT_PCAP
-	status = rte_swx_pipeline_port_in_type_register(p,
-		"source",
-		&rte_swx_port_source_ops);
-	if (status)
-		goto error;
-#endif
-
-	status = rte_swx_pipeline_port_out_type_register(p,
-		"sink",
-		&rte_swx_port_sink_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_in_type_register(p,
-		"fd",
-		&rte_swx_port_fd_reader_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_port_out_type_register(p,
-		"fd",
-		&rte_swx_port_fd_writer_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_table_type_register(p,
-		"exact",
-		RTE_SWX_TABLE_MATCH_EXACT,
-		&rte_swx_table_exact_match_ops);
-	if (status)
-		goto error;
-
-	status = rte_swx_pipeline_table_type_register(p,
-		"wildcard",
-		RTE_SWX_TABLE_MATCH_WILDCARD,
-		&rte_swx_table_wildcard_match_ops);
-	if (status)
-		goto error;
-
-	/* Node allocation */
-	pipeline = calloc(1, sizeof(struct pipeline));
-	if (pipeline == NULL)
-		goto error;
-
-	/* Node fill in */
-	strlcpy(pipeline->name, name, sizeof(pipeline->name));
-	pipeline->p = p;
-	pipeline->timer_period_ms = 10;
-
-	/* Node add to list */
-	TAILQ_INSERT_TAIL(&obj->pipeline_list, pipeline, node);
-
-	return pipeline;
-
-error:
-	rte_swx_pipeline_free(p);
-	return NULL;
-}
-
-struct pipeline *
-pipeline_find(struct obj *obj, const char *name)
-{
-	struct pipeline *pipeline;
-
-	if (!obj || !name)
-		return NULL;
-
-	TAILQ_FOREACH(pipeline, &obj->pipeline_list, node)
-		if (strcmp(name, pipeline->name) == 0)
-			return pipeline;
-
-	return NULL;
-}
-
-/*
  * obj
  */
 struct obj *
@@ -657,8 +424,6 @@ obj_init(void)
 	TAILQ_INIT(&obj->mempool_list);
 	TAILQ_INIT(&obj->link_list);
 	TAILQ_INIT(&obj->ring_list);
-	TAILQ_INIT(&obj->pipeline_list);
-	TAILQ_INIT(&obj->tap_list);
 
 	return obj;
 }

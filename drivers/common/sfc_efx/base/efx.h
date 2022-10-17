@@ -82,6 +82,13 @@ efx_family(
 
 #if EFSYS_OPT_PCI
 
+/* PCIe interface numbers for multi-host configurations. */
+typedef enum efx_pcie_interface_e {
+	EFX_PCIE_INTERFACE_CALLER = 1000,
+	EFX_PCIE_INTERFACE_HOST_PRIMARY,
+	EFX_PCIE_INTERFACE_NIC_EMBEDDED,
+} efx_pcie_interface_t;
+
 typedef struct efx_pci_ops_s {
 	/*
 	 * Function for reading PCIe configuration space.
@@ -304,6 +311,8 @@ efx_nic_check_pcie_link_speed(
 	__in		uint32_t pcie_link_gen,
 	__out		efx_pcie_link_performance_t *resultp);
 
+#define	EFX_MAC_ADDR_LEN 6
+
 #if EFSYS_OPT_MCDI
 
 #if EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10()
@@ -383,6 +392,35 @@ LIBEFX_API
 extern	__checkReturn	boolean_t
 efx_mcdi_request_abort(
 	__in		efx_nic_t *enp);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_get_client_handle(
+	__in		efx_nic_t *enp,
+	__in		efx_pcie_interface_t intf,
+	__in		uint16_t pf,
+	__in		uint16_t vf,
+	__out		uint32_t *handle);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_get_own_client_handle(
+	__in		efx_nic_t *enp,
+	__out		uint32_t *handle);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_client_mac_addr_get(
+	__in		efx_nic_t *enp,
+	__in		uint32_t client_handle,
+	__out		uint8_t addr_bytes[EFX_MAC_ADDR_LEN]);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mcdi_client_mac_addr_set(
+	__in		efx_nic_t *enp,
+	__in		uint32_t client_handle,
+	__in		const uint8_t addr_bytes[EFX_MAC_ADDR_LEN]);
 
 LIBEFX_API
 extern			void
@@ -594,11 +632,10 @@ typedef enum efx_link_mode_e {
 	EFX_LINK_NMODES
 } efx_link_mode_t;
 
-#define	EFX_MAC_ADDR_LEN 6
-
 #define	EFX_VNI_OR_VSID_LEN 3
 
-#define	EFX_MAC_ADDR_IS_MULTICAST(_address) (((uint8_t *)_address)[0] & 0x01)
+#define	EFX_MAC_ADDR_IS_MULTICAST(_address)	\
+	(((const uint8_t *)_address)[0] & 0x01)
 
 #define	EFX_MAC_MULTICAST_LIST_MAX	256
 
@@ -1422,6 +1459,14 @@ typedef enum efx_vi_window_shift_e {
 	EFX_VI_WINDOW_SHIFT_64K = 16,
 } efx_vi_window_shift_t;
 
+typedef enum efx_nic_dma_mapping_e {
+	EFX_NIC_DMA_MAPPING_UNKNOWN = 0,
+	EFX_NIC_DMA_MAPPING_FLAT,
+	EFX_NIC_DMA_MAPPING_REGIONED,
+
+	EFX_NIC_DMA_MAPPING_NTYPES
+} efx_nic_dma_mapping_t;
+
 typedef struct efx_nic_cfg_s {
 	uint32_t		enc_board_type;
 	uint32_t		enc_phy_type;
@@ -1465,6 +1510,22 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_rx_buf_align_start;
 	uint32_t		enc_rx_buf_align_end;
 #if EFSYS_OPT_RX_SCALE
+	/*
+	 * The limit on how many queues an RSS context in the even spread
+	 * mode can span. When this mode is not supported, the value is 0.
+	 */
+	uint32_t		enc_rx_scale_even_spread_max_nqueues;
+	/*
+	 * The limit on how many queues an RSS indirection table can address.
+	 *
+	 * Indirection table entries are offsets relative to a base queue ID.
+	 * This means that the maximum offset has to be less than this value.
+	 */
+	uint32_t		enc_rx_scale_indirection_max_nqueues;
+	/* Minimum number of entries an RSS indirection table can contain. */
+	uint32_t		enc_rx_scale_tbl_min_nentries;
+	/* Maximum number of entries an RSS indirection table can contain. */
+	uint32_t		enc_rx_scale_tbl_max_nentries;
 	uint32_t		enc_rx_scale_max_exclusive_contexts;
 	/*
 	 * Mask of supported hash algorithms.
@@ -1477,6 +1538,11 @@ typedef struct efx_nic_cfg_s {
 	 */
 	boolean_t		enc_rx_scale_l4_hash_supported;
 	boolean_t		enc_rx_scale_additional_modes_supported;
+	/*
+	 * Indicates whether the user can decide how many entries to
+	 * have in the indirection table of an exclusive RSS context.
+	 */
+	boolean_t		enc_rx_scale_tbl_entry_count_is_selectable;
 #endif /* EFSYS_OPT_RX_SCALE */
 #if EFSYS_OPT_LOOPBACK
 	efx_qword_t		enc_loopback_types[EFX_LINK_NMODES];
@@ -1504,6 +1570,7 @@ typedef struct efx_nic_cfg_s {
 	uint32_t		enc_bist_mask;
 #endif	/* EFSYS_OPT_BIST */
 #if EFSYS_OPT_RIVERHEAD || EFX_OPTS_EF10()
+	efx_pcie_interface_t	enc_intf;
 	uint32_t		enc_pf;
 	uint32_t		enc_vf;
 	uint32_t		enc_privilege_mask;
@@ -1520,6 +1587,7 @@ typedef struct efx_nic_cfg_s {
 	/* Number of rx descriptors the hardware requires for a push. */
 	uint32_t		enc_rx_push_align;
 	/* Maximum amount of data in DMA descriptor */
+	uint32_t		enc_rx_dma_desc_size_max;
 	uint32_t		enc_tx_dma_desc_size_max;
 	/*
 	 * Boundary which DMA descriptor data must not cross or 0 if no
@@ -1595,12 +1663,23 @@ typedef struct efx_nic_cfg_s {
 	boolean_t		enc_hlb_counters;
 	/* NIC support for Match-Action Engine (MAE). */
 	boolean_t		enc_mae_supported;
+	/*
+	 * NIC is privileged, i.e. it is the MAE admin.
+	 * Only privileged MAE clients can manage MAE flow rules,
+	 * for example, modify, count and route traffic to selected
+	 * destination (a MAE client or network port).
+	 */
+	boolean_t		enc_mae_admin;
+	/* NIC support for MAE action set v2 features. */
+	boolean_t		enc_mae_aset_v2_supported;
 	/* Firmware support for "FLAG" and "MARK" filter actions */
 	boolean_t		enc_filter_action_flag_supported;
 	boolean_t		enc_filter_action_mark_supported;
 	uint32_t		enc_filter_action_mark_max;
 	/* Port assigned to this PCI function */
 	uint32_t		enc_assigned_port;
+	/* NIC DMA mapping type */
+	efx_nic_dma_mapping_t	enc_dma_mapping;
 } efx_nic_cfg_t;
 
 #define	EFX_PCI_VF_INVALID 0xffff
@@ -2334,6 +2413,19 @@ efx_ev_qcreate(
 	__deref_out	efx_evq_t **eepp);
 
 LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_ev_qcreate_irq(
+	__in		efx_nic_t *enp,
+	__in		unsigned int index,
+	__in		efsys_mem_t *esmp,
+	__in		size_t ndescs,
+	__in		uint32_t id,
+	__in		uint32_t us,
+	__in		uint32_t flags,
+	__in		uint32_t irq,
+	__deref_out	efx_evq_t **eepp);
+
+LIBEFX_API
 extern		void
 efx_ev_qpost(
 	__in		efx_evq_t *eep,
@@ -2713,7 +2805,8 @@ typedef enum efx_rx_hash_support_e {
 typedef enum efx_rx_scale_context_type_e {
 	EFX_RX_SCALE_UNAVAILABLE = 0,	/* No RX scale context */
 	EFX_RX_SCALE_EXCLUSIVE,		/* Writable key/indirection table */
-	EFX_RX_SCALE_SHARED		/* Read-only key/indirection table */
+	EFX_RX_SCALE_SHARED,		/* Read-only key/indirection table */
+	EFX_RX_SCALE_EVEN_SPREAD,	/* No indirection table, writable key */
 } efx_rx_scale_context_type_t;
 
 /*
@@ -2827,6 +2920,15 @@ efx_rx_scale_context_alloc(
 
 LIBEFX_API
 extern	__checkReturn	efx_rc_t
+efx_rx_scale_context_alloc_v2(
+	__in		efx_nic_t *enp,
+	__in		efx_rx_scale_context_type_t type,
+	__in		uint32_t num_queues,
+	__in		uint32_t table_nentries,
+	__out		uint32_t *rss_contextp);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
 efx_rx_scale_context_free(
 	__in		efx_nic_t *enp,
 	__in		uint32_t rss_context);
@@ -2841,12 +2943,12 @@ efx_rx_scale_mode_set(
 	__in	boolean_t insert);
 
 LIBEFX_API
-extern	__checkReturn	efx_rc_t
+extern	__checkReturn		efx_rc_t
 efx_rx_scale_tbl_set(
-	__in		efx_nic_t *enp,
-	__in		uint32_t rss_context,
-	__in_ecount(n)	unsigned int *table,
-	__in		size_t n);
+	__in			efx_nic_t *enp,
+	__in			uint32_t rss_context,
+	__in_ecount(nentries)	unsigned int *table,
+	__in			size_t nentries);
 
 LIBEFX_API
 extern	__checkReturn	efx_rc_t
@@ -2912,6 +3014,7 @@ typedef enum efx_rx_prefix_field_e {
 	EFX_RX_PREFIX_FIELD_USER_MARK_VALID,
 	EFX_RX_PREFIX_FIELD_CSUM_FRAME,
 	EFX_RX_PREFIX_FIELD_INGRESS_VPORT,
+	EFX_RX_PREFIX_FIELD_INGRESS_MPORT = EFX_RX_PREFIX_FIELD_INGRESS_VPORT,
 	EFX_RX_PREFIX_NFIELDS
 } efx_rx_prefix_field_t;
 
@@ -2985,6 +3088,18 @@ typedef enum efx_rxq_type_e {
  * the driver.
  */
 #define	EFX_RXQ_FLAG_RSS_HASH		0x4
+/*
+ * Request ingress mport field in the Rx prefix of a queue.
+ */
+#define	EFX_RXQ_FLAG_INGRESS_MPORT	0x8
+/*
+ * Request user mark field in the Rx prefix of a queue.
+ */
+#define	EFX_RXQ_FLAG_USER_MARK		0x10
+/*
+ * Request user flag field in the Rx prefix of a queue.
+ */
+#define	EFX_RXQ_FLAG_USER_FLAG		0x20
 
 LIBEFX_API
 extern	__checkReturn	efx_rc_t
@@ -3367,6 +3482,8 @@ typedef uint8_t efx_filter_flags_t;
 #define	EFX_FILTER_MATCH_OUTER_VID		0x00000100
 /* Match by IP transport protocol */
 #define	EFX_FILTER_MATCH_IP_PROTO		0x00000200
+/* Match by ingress MPORT */
+#define	EFX_FILTER_MATCH_MPORT			0x00000400
 /* Match by VNI or VSID */
 #define	EFX_FILTER_MATCH_VNI_OR_VSID		0x00000800
 /* For encapsulated packets, match by inner frame local MAC address */
@@ -3429,6 +3546,7 @@ typedef struct efx_filter_spec_s {
 	efx_oword_t			efs_loc_host;
 	uint8_t				efs_vni_or_vsid[EFX_VNI_OR_VSID_LEN];
 	uint8_t				efs_ifrm_loc_mac[EFX_MAC_ADDR_LEN];
+	uint32_t			efs_ingress_mport;
 } efx_filter_spec_t;
 
 
@@ -4071,6 +4189,7 @@ typedef struct efx_mae_limits_s {
 	uint32_t			eml_max_n_outer_prios;
 	uint32_t			eml_encap_types_supported;
 	uint32_t			eml_encap_header_size_limit;
+	uint32_t			eml_max_n_counters;
 } efx_mae_limits_t;
 
 LIBEFX_API
@@ -4103,6 +4222,10 @@ efx_mae_match_spec_fini(
 	__in				efx_mae_match_spec_t *spec);
 
 typedef enum efx_mae_field_id_e {
+	/*
+	 * Fields which can be set by efx_mae_match_spec_field_set()
+	 * or by using dedicated field-specific helper APIs.
+	 */
 	EFX_MAE_FIELD_INGRESS_MPORT_SELECTOR = 0,
 	EFX_MAE_FIELD_ETHER_TYPE_BE,
 	EFX_MAE_FIELD_ETH_SADDR_BE,
@@ -4140,6 +4263,17 @@ typedef enum efx_mae_field_id_e {
 	EFX_MAE_FIELD_ENC_VNET_ID_BE,
 	EFX_MAE_FIELD_OUTER_RULE_ID,
 
+	/* Single bits which can be set by efx_mae_match_spec_bit_set(). */
+	EFX_MAE_FIELD_HAS_OVLAN,
+	EFX_MAE_FIELD_HAS_IVLAN,
+	EFX_MAE_FIELD_ENC_HAS_OVLAN,
+	EFX_MAE_FIELD_ENC_HAS_IVLAN,
+
+	/*
+	 * Fields which can be set by efx_mae_match_spec_field_set()
+	 * or by using dedicated field-specific helper APIs.
+	 */
+	EFX_MAE_FIELD_RECIRC_ID,
 	EFX_MAE_FIELD_NIDS
 } efx_mae_field_id_t;
 
@@ -4148,7 +4282,67 @@ typedef struct efx_mport_sel_s {
 	uint32_t sel;
 } efx_mport_sel_t;
 
+/*
+ * MPORT ID. Used to refer dynamically to a specific MPORT.
+ * The difference between MPORT selector and MPORT ID is that
+ * selector can specify an exact MPORT ID or it can specify a
+ * pattern by which an exact MPORT ID can be selected. For example,
+ * static MPORT selector can specify MPORT of a current PF, which
+ * will be translated to the dynamic MPORT ID based on which PF is
+ * using that MPORT selector.
+ */
+typedef struct efx_mport_id_s {
+	uint32_t id;
+} efx_mport_id_t;
+
+typedef enum efx_mport_type_e {
+	EFX_MPORT_TYPE_NET_PORT = 0,
+	EFX_MPORT_TYPE_ALIAS,
+	EFX_MPORT_TYPE_VNIC,
+} efx_mport_type_t;
+
+typedef enum efx_mport_vnic_client_type_e {
+	EFX_MPORT_VNIC_CLIENT_FUNCTION = 1,
+	EFX_MPORT_VNIC_CLIENT_PLUGIN,
+} efx_mport_vnic_client_type_t;
+
+typedef struct efx_mport_desc_s {
+	efx_mport_id_t			emd_id;
+	boolean_t			emd_can_receive_on;
+	boolean_t			emd_can_deliver_to;
+	boolean_t			emd_can_delete;
+	boolean_t			emd_zombie;
+	efx_mport_type_t		emd_type;
+	union {
+		struct {
+			uint32_t	ep_index;
+		} emd_net_port;
+		struct {
+			efx_mport_id_t	ea_target_mport_id;
+		} emd_alias;
+		struct {
+			efx_mport_vnic_client_type_t	ev_client_type;
+			efx_pcie_interface_t		ev_intf;
+			uint16_t			ev_pf;
+			uint16_t			ev_vf;
+			/* MCDI client handle for this VNIC. */
+			uint32_t			ev_handle;
+		} emd_vnic;
+	};
+} efx_mport_desc_t;
+
 #define	EFX_MPORT_NULL			(0U)
+
+/*
+ * Generate an invalid MPORT selector.
+ *
+ * The resulting MPORT selector is opaque to the caller. Requests
+ * that attempt to use it will be rejected.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_mport_invalid(
+	__out				efx_mport_sel_t *mportp);
 
 /*
  * Get MPORT selector of a physical port.
@@ -4178,6 +4372,42 @@ efx_mae_mport_by_pcie_function(
 	__out				efx_mport_sel_t *mportp);
 
 /*
+ * Get MPORT selector of a multi-host PCIe function.
+ *
+ * The resulting MPORT selector is opaque to the caller and can be
+ * passed as an argument to efx_mae_match_spec_mport_set()
+ * and efx_mae_action_set_populate_deliver().
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_mport_by_pcie_mh_function(
+	__in				efx_pcie_interface_t intf,
+	__in				uint32_t pf,
+	__in				uint32_t vf,
+	__out				efx_mport_sel_t *mportp);
+
+/*
+ * Get MPORT selector by an MPORT ID
+ *
+ * The resulting MPORT selector is opaque to the caller and can be
+ * passed as an argument to efx_mae_match_spec_mport_set()
+ * and efx_mae_action_set_populate_deliver().
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_mport_by_id(
+	__in				const efx_mport_id_t *mport_idp,
+	__out				efx_mport_sel_t *mportp);
+
+/* Get MPORT ID by an MPORT selector */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_mport_id_by_selector(
+	__in				efx_nic_t *enp,
+	__in				const efx_mport_sel_t *mport_selectorp,
+	__out				efx_mport_id_t *mport_idp);
+
+/*
  * Fields which have BE postfix in their named constants are expected
  * to be passed by callers in big-endian byte order. They will appear
  * in the MCDI buffer, which is a part of the match specification, in
@@ -4198,6 +4428,14 @@ efx_mae_match_spec_field_set(
 	__in				size_t mask_size,
 	__in_bcount(mask_size)		const uint8_t *mask);
 
+/* The corresponding mask will be set to B_TRUE. */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_match_spec_bit_set(
+	__in				efx_mae_match_spec_t *spec,
+	__in				efx_mae_field_id_t field_id,
+	__in				boolean_t value);
+
 /* If the mask argument is NULL, the API will use full mask by default. */
 LIBEFX_API
 extern	__checkReturn			efx_rc_t
@@ -4205,6 +4443,12 @@ efx_mae_match_spec_mport_set(
 	__in				efx_mae_match_spec_t *spec,
 	__in				const efx_mport_sel_t *valuep,
 	__in_opt			const efx_mport_sel_t *maskp);
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_match_spec_recirc_id_set(
+	__in				efx_mae_match_spec_t *spec,
+	__in				uint8_t recirc_id);
 
 LIBEFX_API
 extern	__checkReturn			boolean_t
@@ -4250,6 +4494,46 @@ extern	__checkReturn			efx_rc_t
 efx_mae_action_set_populate_vlan_pop(
 	__in				efx_mae_actions_t *spec);
 
+/*
+ * This always amends the outermost header. This way, for a tunnel
+ * packet, if action DECAP is not requested, this will affect the
+ * outer header; otherwise, the inner header will be updated.
+ *
+ * Use efx_mae_action_set_fill_in_dst_mac_id() to set ID of
+ * the allocated MAC address entry in the specification
+ * prior to action set allocation.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_populate_set_dst_mac(
+	__in				efx_mae_actions_t *spec);
+
+/*
+ * This always amends the outermost header. This way, for a tunnel
+ * packet, if action DECAP is not requested, this will affect the
+ * outer header; otherwise, the inner header will be updated.
+ *
+ * Use efx_mae_action_set_fill_in_src_mac_id() to set ID of
+ * the allocated MAC address entry in the specification
+ * prior to action set allocation.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_populate_set_src_mac(
+	__in				efx_mae_actions_t *spec);
+
+/*
+ * This always amends the outermost header. This way, for a tunnel
+ * packet, if action DECAP is not requested, this will affect the
+ * outer header; otherwise, the inner header will be updated.
+ *
+ * This will also take care to update IPv4 checksum accordingly.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_populate_decr_ip_ttl(
+	__in				efx_mae_actions_t *spec);
+
 LIBEFX_API
 extern	__checkReturn			efx_rc_t
 efx_mae_action_set_populate_vlan_push(
@@ -4264,6 +4548,27 @@ efx_mae_action_set_populate_vlan_push(
 LIBEFX_API
 extern	__checkReturn			efx_rc_t
 efx_mae_action_set_populate_encap(
+	__in				efx_mae_actions_t *spec);
+
+/*
+ * Use efx_mae_action_set_fill_in_counter_id() to set ID of a counter
+ * in the specification prior to action set allocation.
+ *
+ * NOTICE: the HW will conduct action COUNT after actions DECAP,
+ * VLAN_POP, VLAN_PUSH (if any) have been applied to the packet,
+ * but, as a workaround, this order is not validated by the API.
+ *
+ * The workaround helps to unblock DPDK + Open vSwitch use case.
+ * In Open vSwitch, this action is always the first to be added,
+ * in particular, it's known to be inserted before action DECAP,
+ * so enforcing the right order here would cause runtime errors.
+ * The existing behaviour in Open vSwitch is unlikely to change
+ * any time soon, and the workaround is a good solution because
+ * in fact the real COUNT order is a don't care to Open vSwitch.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_populate_count(
 	__in				efx_mae_actions_t *spec);
 
 LIBEFX_API
@@ -4319,6 +4624,17 @@ typedef struct efx_mae_rule_id_s {
 	uint32_t id;
 } efx_mae_rule_id_t;
 
+/*
+ * Set the initial recirculation ID. It goes to action rule (AR) lookup.
+ *
+ * To match on this ID in an AR, use efx_mae_match_spec_recirc_id_set().
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_outer_rule_recirc_id_set(
+	__in				efx_mae_match_spec_t *spec,
+	__in				uint8_t recirc_id);
+
 LIBEFX_API
 extern	__checkReturn		efx_rc_t
 efx_mae_outer_rule_insert(
@@ -4338,6 +4654,38 @@ extern	__checkReturn			efx_rc_t
 efx_mae_match_spec_outer_rule_id_set(
 	__in				efx_mae_match_spec_t *spec,
 	__in				const efx_mae_rule_id_t *or_idp);
+
+/* MAC address entry ID */
+typedef struct efx_mae_mac_id_s {
+	uint32_t id;
+} efx_mae_mac_id_t;
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mae_mac_addr_alloc(
+	__in		efx_nic_t *enp,
+	__in		uint8_t addr_bytes[EFX_MAC_ADDR_LEN],
+	__out		efx_mae_mac_id_t *mac_idp);
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_mae_mac_addr_free(
+	__in		efx_nic_t *enp,
+	__in		const efx_mae_mac_id_t *mac_idp);
+
+/* See description before efx_mae_action_set_populate_set_dst_mac(). */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_fill_in_dst_mac_id(
+	__in				efx_mae_actions_t *spec,
+	__in				const efx_mae_mac_id_t *mac_idp);
+
+/* See description before efx_mae_action_set_populate_set_src_mac(). */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_fill_in_src_mac_id(
+	__in				efx_mae_actions_t *spec,
+	__in				const efx_mae_mac_id_t *mac_idp);
 
 /* Encap. header ID */
 typedef struct efx_mae_eh_id_s {
@@ -4366,6 +4714,22 @@ efx_mae_action_set_fill_in_eh_id(
 	__in				efx_mae_actions_t *spec,
 	__in				const efx_mae_eh_id_t *eh_idp);
 
+typedef struct efx_counter_s {
+	uint32_t id;
+} efx_counter_t;
+
+LIBEFX_API
+extern	__checkReturn			unsigned int
+efx_mae_action_set_get_nb_count(
+	__in				const efx_mae_actions_t *spec);
+
+/* See description before efx_mae_action_set_populate_count(). */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_action_set_fill_in_counter_id(
+	__in				efx_mae_actions_t *spec,
+	__in				const efx_counter_t *counter_idp);
+
 /* Action set ID */
 typedef struct efx_mae_aset_id_s {
 	uint32_t id;
@@ -4377,6 +4741,71 @@ efx_mae_action_set_alloc(
 	__in				efx_nic_t *enp,
 	__in				const efx_mae_actions_t *spec,
 	__out				efx_mae_aset_id_t *aset_idp);
+
+/*
+ * Generation count has two purposes:
+ *
+ * 1) Distinguish between counter packets that belong to freed counter
+ *    and the packets that belong to reallocated counter (with the same ID);
+ * 2) Make sure that all packets are received for a counter that was freed;
+ *
+ * API users should provide generation count out parameter in allocation
+ * function if counters can be reallocated and consistent counter values are
+ * required.
+ *
+ * API users that need consistent final counter values after counter
+ * deallocation or counter stream stop should provide the parameter in
+ * functions that free the counters and stop the counter stream.
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_counters_alloc(
+	__in				efx_nic_t *enp,
+	__in				uint32_t n_counters,
+	__out				uint32_t *n_allocatedp,
+	__out_ecount(n_counters)	efx_counter_t *countersp,
+	__out_opt			uint32_t *gen_countp);
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_counters_free(
+	__in				efx_nic_t *enp,
+	__in				uint32_t n_counters,
+	__out				uint32_t *n_freedp,
+	__in_ecount(n_counters)		const efx_counter_t *countersp,
+	__out_opt			uint32_t *gen_countp);
+
+/* When set, include counters with a value of zero */
+#define	EFX_MAE_COUNTERS_STREAM_IN_ZERO_SQUASH_DISABLE	(1U << 0)
+
+/*
+ * Set if credit-based flow control is used. In this case the driver
+ * must call efx_mae_counters_stream_give_credits() to notify the
+ * packetiser of descriptors written.
+ */
+#define	EFX_MAE_COUNTERS_STREAM_OUT_USES_CREDITS	(1U << 0)
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_counters_stream_start(
+	__in				efx_nic_t *enp,
+	__in				uint16_t rxq_id,
+	__in				uint16_t packet_size,
+	__in				uint32_t flags_in,
+	__out				uint32_t *flags_out);
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_counters_stream_stop(
+	__in				efx_nic_t *enp,
+	__in				uint16_t rxq_id,
+	__out_opt			uint32_t *gen_countp);
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_counters_stream_give_credits(
+	__in				efx_nic_t *enp,
+	__in				uint32_t n_credits);
 
 LIBEFX_API
 extern	__checkReturn			efx_rc_t
@@ -4408,6 +4837,39 @@ efx_mae_action_rule_remove(
 	__in				efx_nic_t *enp,
 	__in				const efx_mae_rule_id_t *ar_idp);
 
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mcdi_mport_alloc_alias(
+	__in				efx_nic_t *enp,
+	__out				efx_mport_id_t *mportp,
+	__out_opt			uint32_t *labelp);
+
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_mport_free(
+	__in				efx_nic_t *enp,
+	__in				const efx_mport_id_t *mportp);
+
+typedef __checkReturn	efx_rc_t
+(efx_mae_read_mport_journal_cb)(
+	__in		void *cb_datap,
+	__in		efx_mport_desc_t *mportp,
+	__in		size_t mport_len);
+
+/*
+ * Read mport descriptions from the MAE journal (which describes added and
+ * removed mports) and pass them to a user-supplied callback. The user gets
+ * only one chance to process the data it's given. Once the callback function
+ * finishes, that particular mport description will be gone.
+ * The journal will be fully repopulated on PCI reset (efx_nic_reset function).
+ */
+LIBEFX_API
+extern	__checkReturn			efx_rc_t
+efx_mae_read_mport_journal(
+	__in				efx_nic_t *enp,
+	__in				efx_mae_read_mport_journal_cb *cbp,
+	__in				void *cb_datap);
+
 #endif /* EFSYS_OPT_MAE */
 
 #if EFSYS_OPT_VIRTIO
@@ -4425,17 +4887,17 @@ typedef enum efx_virtio_vq_type_e {
 
 typedef struct efx_virtio_vq_dyncfg_s {
 	/*
-	 * If queue is being created to be migrated then this
-	 * should be the FINAL_PIDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
+	 * If queue is being created to be migrated then this should be
+	 * the FINAL_AVAIL_IDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
 	 * of the queue being migrated from. Otherwise, it should be zero.
 	 */
-	uint32_t		evvd_vq_pidx;
+	uint32_t		evvd_vq_avail_idx;
 	/*
-	 * If this queue is being created to be migrated then this
-	 * should be the FINAL_CIDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
+	 * If queue is being created to be migrated then this should be
+	 * the FINAL_USED_IDX value returned by MC_CMD_VIRTIO_FINI_QUEUE
 	 * of the queue being migrated from. Otherwise, it should be zero.
 	 */
-	uint32_t		evvd_vq_cidx;
+	uint32_t		evvd_vq_used_idx;
 } efx_virtio_vq_dyncfg_t;
 
 /*
@@ -4551,6 +5013,42 @@ efx_virtio_verify_features(
 	__in		uint64_t features);
 
 #endif /* EFSYS_OPT_VIRTIO */
+
+LIBEFX_API
+extern	 __checkReturn	efx_rc_t
+efx_nic_dma_config_add(
+	__in		efx_nic_t *enp,
+	__in		efsys_dma_addr_t trgt_addr,
+	__in		size_t len,
+	__out_opt	efsys_dma_addr_t *nic_basep,
+	__out_opt	efsys_dma_addr_t *trgt_basep,
+	__out_opt	size_t *map_lenp);
+
+LIBEFX_API
+extern	 __checkReturn	efx_rc_t
+efx_nic_dma_reconfigure(
+	__in		efx_nic_t *enp);
+
+typedef enum efx_nic_dma_addr_type_e {
+	EFX_NIC_DMA_ADDR_MCDI_BUF,
+	EFX_NIC_DMA_ADDR_MAC_STATS_BUF,
+	EFX_NIC_DMA_ADDR_EVENT_RING,
+	EFX_NIC_DMA_ADDR_RX_RING,
+	EFX_NIC_DMA_ADDR_TX_RING,
+	EFX_NIC_DMA_ADDR_RX_BUF,
+	EFX_NIC_DMA_ADDR_TX_BUF,
+
+	EFX_NIC_DMA_ADDR_NTYPES
+} efx_nic_dma_addr_type_t;
+
+LIBEFX_API
+extern	__checkReturn	efx_rc_t
+efx_nic_dma_map(
+	__in		efx_nic_t *enp,
+	__in		efx_nic_dma_addr_type_t addr_type,
+	__in		efsys_dma_addr_t tgt_addr,
+	__in		size_t len,
+	__out		efsys_dma_addr_t *nic_addrp);
 
 #ifdef	__cplusplus
 }

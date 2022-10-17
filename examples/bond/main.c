@@ -24,7 +24,6 @@
 #include <rte_memcpy.h>
 #include <rte_eal.h>
 #include <rte_launch.h>
-#include <rte_atomic.h>
 #include <rte_cycles.h>
 #include <rte_prefetch.h>
 #include <rte_lcore.h>
@@ -104,8 +103,7 @@
 #define MAX_PORTS	4
 #define PRINT_MAC(addr)		printf("%02"PRIx8":%02"PRIx8":%02"PRIx8 \
 		":%02"PRIx8":%02"PRIx8":%02"PRIx8,	\
-		addr.addr_bytes[0], addr.addr_bytes[1], addr.addr_bytes[2], \
-		addr.addr_bytes[3], addr.addr_bytes[4], addr.addr_bytes[5])
+		RTE_ETHER_ADDR_BYTES(&addr))
 
 uint16_t slaves[RTE_MAX_ETHPORTS];
 uint16_t slaves_count;
@@ -116,18 +114,16 @@ static struct rte_mempool *mbuf_pool;
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP,
+			.rss_hf = RTE_ETH_RSS_IP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -151,9 +147,9 @@ slave_port_init(uint16_t portid, struct rte_mempool *mbuf_pool)
 			"Error during getting device (port %u) info: %s\n",
 			portid, strerror(-retval));
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	local_port_conf.rx_adv_conf.rss_conf.rss_hf &=
 		dev_info.flow_type_rss_offloads;
@@ -233,7 +229,7 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 			0 /*SOCKET_ID_ANY*/);
 	if (retval < 0)
 		rte_exit(EXIT_FAILURE,
-				"Faled to create bond port\n");
+				"Failed to create bond port\n");
 
 	BOND_PORT = retval;
 
@@ -243,9 +239,9 @@ bond_port_init(struct rte_mempool *mbuf_pool)
 			"Error during getting device (port %u) info: %s\n",
 			BOND_PORT, strerror(-retval));
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	retval = rte_eth_dev_configure(BOND_PORT, 1, 1, &local_port_conf);
 	if (retval != 0)
 		rte_exit(EXIT_FAILURE, "port %u: configuration failed (res=%d)\n",
@@ -359,7 +355,7 @@ struct global_flag_stru_t *global_flag_stru_p = &global_flag_stru;
 static int lcore_main(__rte_unused void *arg1)
 {
 	struct rte_mbuf *pkts[MAX_PKT_BURST] __rte_cache_aligned;
-	struct rte_ether_addr d_addr;
+	struct rte_ether_addr dst_addr;
 
 	struct rte_ether_addr bond_mac_addr;
 	struct rte_ether_hdr *eth_hdr;
@@ -376,7 +372,7 @@ static int lcore_main(__rte_unused void *arg1)
 	bond_ip = BOND_IP_1 | (BOND_IP_2 << 8) |
 				(BOND_IP_3 << 16) | (BOND_IP_4 << 24);
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 
 	while (global_flag_stru_p->LcoreMainIsRunning) {
 		rte_spinlock_unlock(&global_flag_stru_p->lock);
@@ -408,7 +404,7 @@ static int lcore_main(__rte_unused void *arg1)
 						struct rte_ether_hdr *);
 			ether_type = eth_hdr->ether_type;
 			if (ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_VLAN))
-				printf("VLAN taged frame, offset:");
+				printf("VLAN tagged frame, offset:");
 			offset = get_vlan_offset(eth_hdr, &ether_type);
 			if (offset > 0)
 				printf("%d\n", offset);
@@ -423,13 +419,13 @@ static int lcore_main(__rte_unused void *arg1)
 					if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
 						arp_hdr->arp_opcode = rte_cpu_to_be_16(RTE_ARP_OP_REPLY);
 						/* Switch src and dst data and set bonding MAC */
-						rte_ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
-						rte_ether_addr_copy(&bond_mac_addr, &eth_hdr->s_addr);
+						rte_ether_addr_copy(&eth_hdr->src_addr, &eth_hdr->dst_addr);
+						rte_ether_addr_copy(&bond_mac_addr, &eth_hdr->src_addr);
 						rte_ether_addr_copy(&arp_hdr->arp_data.arp_sha,
 								&arp_hdr->arp_data.arp_tha);
 						arp_hdr->arp_data.arp_tip = arp_hdr->arp_data.arp_sip;
-						rte_ether_addr_copy(&bond_mac_addr, &d_addr);
-						rte_ether_addr_copy(&d_addr, &arp_hdr->arp_data.arp_sha);
+						rte_ether_addr_copy(&bond_mac_addr, &dst_addr);
+						rte_ether_addr_copy(&dst_addr, &arp_hdr->arp_data.arp_sha);
 						arp_hdr->arp_data.arp_sip = bond_ip;
 						rte_eth_tx_burst(BOND_PORT, 0, &pkts[i], 1);
 						is_free = 1;
@@ -444,8 +440,10 @@ static int lcore_main(__rte_unused void *arg1)
 				 }
 				ipv4_hdr = (struct rte_ipv4_hdr *)((char *)(eth_hdr + 1) + offset);
 				if (ipv4_hdr->dst_addr == bond_ip) {
-					rte_ether_addr_copy(&eth_hdr->s_addr, &eth_hdr->d_addr);
-					rte_ether_addr_copy(&bond_mac_addr, &eth_hdr->s_addr);
+					rte_ether_addr_copy(&eth_hdr->src_addr,
+							&eth_hdr->dst_addr);
+					rte_ether_addr_copy(&bond_mac_addr,
+							&eth_hdr->src_addr);
 					ipv4_hdr->dst_addr = ipv4_hdr->src_addr;
 					ipv4_hdr->src_addr = bond_ip;
 					rte_eth_tx_burst(BOND_PORT, 0, &pkts[i], 1);
@@ -457,7 +455,7 @@ static int lcore_main(__rte_unused void *arg1)
 			if (is_free == 0)
 				rte_pktmbuf_free(pkts[i]);
 		}
-		rte_spinlock_trylock(&global_flag_stru_p->lock);
+		rte_spinlock_lock(&global_flag_stru_p->lock);
 	}
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	printf("BYE lcore_main\n");
@@ -520,8 +518,8 @@ static void cmd_obj_send_parsed(void *parsed_result,
 	created_pkt->pkt_len = pkt_size;
 
 	eth_hdr = rte_pktmbuf_mtod(created_pkt, struct rte_ether_hdr *);
-	rte_ether_addr_copy(&bond_mac_addr, &eth_hdr->s_addr);
-	memset(&eth_hdr->d_addr, 0xFF, RTE_ETHER_ADDR_LEN);
+	rte_ether_addr_copy(&bond_mac_addr, &eth_hdr->src_addr);
+	memset(&eth_hdr->dst_addr, 0xFF, RTE_ETHER_ADDR_LEN);
 	eth_hdr->ether_type = rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP);
 
 	arp_hdr = (struct rte_arp_hdr *)(
@@ -572,7 +570,7 @@ static void cmd_start_parsed(__rte_unused void *parsed_result,
 {
 	int worker_core_id = rte_lcore_id();
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0) {
 		if (rte_eal_get_lcore_state(global_flag_stru_p->LcoreMainCore)
 		    != WAIT) {
@@ -592,7 +590,7 @@ static void cmd_start_parsed(__rte_unused void *parsed_result,
 	if ((worker_core_id >= RTE_MAX_LCORE) || (worker_core_id == 0))
 		return;
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	global_flag_stru_p->LcoreMainIsRunning = 1;
 	rte_spinlock_unlock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
@@ -660,7 +658,7 @@ static void cmd_stop_parsed(__rte_unused void *parsed_result,
 			    struct cmdline *cl,
 			    __rte_unused void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -701,7 +699,7 @@ static void cmd_quit_parsed(__rte_unused void *parsed_result,
 			    struct cmdline *cl,
 			    __rte_unused void *data)
 {
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	if (global_flag_stru_p->LcoreMainIsRunning == 0)	{
 		cmdline_printf(cl,
 					"lcore_main not running on core:%d\n",
@@ -763,7 +761,7 @@ static void cmd_show_parsed(__rte_unused void *parsed_result,
 		printf("\n");
 	}
 
-	rte_spinlock_trylock(&global_flag_stru_p->lock);
+	rte_spinlock_lock(&global_flag_stru_p->lock);
 	cmdline_printf(cl,
 			"Active_slaves:%d "
 			"packets received:Tot:%d Arp:%d IPv4:%d\n",
@@ -876,5 +874,9 @@ main(int argc, char *argv[])
 	prompt(NULL);
 
 	rte_delay_ms(100);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
+
 	return 0;
 }

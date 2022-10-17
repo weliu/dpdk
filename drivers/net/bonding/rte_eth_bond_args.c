@@ -4,7 +4,8 @@
 
 #include <rte_devargs.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_driver.h>
+#include <bus_pci_driver.h>
 #include <rte_kvargs.h>
 
 #include "rte_eth_bond.h"
@@ -18,7 +19,7 @@ const char *pmd_bond_init_valid_arguments[] = {
 	PMD_BOND_SOCKET_ID_KVARG,
 	PMD_BOND_MAC_ADDR_KVARG,
 	PMD_BOND_AGG_MODE_KVARG,
-	"driver",
+	RTE_DEVARGS_KEY_DRIVER,
 	NULL
 };
 
@@ -200,20 +201,20 @@ int
 bond_ethdev_parse_socket_id_kvarg(const char *key __rte_unused,
 		const char *value, void *extra_args)
 {
-	int socket_id;
+	long socket_id;
 	char *endptr;
 
 	if (value == NULL || extra_args == NULL)
 		return -1;
 
 	errno = 0;
-	socket_id = (uint8_t)strtol(value, &endptr, 10);
+	socket_id = strtol(value, &endptr, 10);
 	if (*endptr != 0 || errno != 0)
 		return -1;
 
 	/* validate socket id value */
-	if (socket_id >= 0) {
-		*(uint8_t *)extra_args = (uint8_t)socket_id;
+	if (socket_id >= 0 && socket_id < RTE_MAX_NUMA_NODES) {
+		*(int *)extra_args = (int)socket_id;
 		return 0;
 	}
 	return -1;

@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2001-2021 Intel Corporation
+ * Copyright(c) 2001-2022 Intel Corporation
  */
 
 #include "ice_common.h"
@@ -52,6 +52,21 @@ static void ice_mailbox_init_regs(struct ice_hw *hw)
 	struct ice_ctl_q_info *cq = &hw->mailboxq;
 
 	ICE_CQ_INIT_REGS(cq, PF_MBX);
+}
+
+/**
+ * ice_sb_init_regs - Initialize Sideband registers
+ * @hw: pointer to the hardware structure
+ *
+ * This assumes the alloc_sq and alloc_rq functions have already been called
+ */
+static void ice_sb_init_regs(struct ice_hw *hw)
+{
+	struct ice_ctl_q_info *cq = &hw->sbq;
+
+	ice_debug(hw, ICE_DBG_TRACE, "%s\n", __func__);
+
+	ICE_CQ_INIT_REGS(cq, PF_SB);
 }
 
 /**
@@ -480,12 +495,18 @@ static bool ice_aq_ver_check(struct ice_hw *hw)
 		return false;
 	} else if (hw->api_maj_ver == EXP_FW_API_VER_MAJOR) {
 		if (hw->api_min_ver > (EXP_FW_API_VER_MINOR + 2))
-			ice_info(hw, "The driver for the device detected a newer version of the NVM image than expected. Please install the most recent version of the network driver.\n");
+			ice_info(hw, "The driver for the device detected a newer version (%u.%u) of the NVM image than expected (%u.%u). Please install the most recent version of the network driver.\n",
+				 hw->api_maj_ver, hw->api_min_ver,
+				 EXP_FW_API_VER_MAJOR, EXP_FW_API_VER_MINOR);
 		else if ((hw->api_min_ver + 2) < EXP_FW_API_VER_MINOR)
-			ice_info(hw, "The driver for the device detected an older version of the NVM image than expected. Please update the NVM image.\n");
+			ice_info(hw, "The driver for the device detected an older version (%u.%u) of the NVM image than expected (%u.%u). Please update the NVM image.\n",
+				 hw->api_maj_ver, hw->api_min_ver,
+				 EXP_FW_API_VER_MAJOR, EXP_FW_API_VER_MINOR);
 	} else {
 		/* Major API version is older than expected, log a warning */
-		ice_info(hw, "The driver for the device detected an older version of the NVM image than expected. Please update the NVM image.\n");
+		ice_info(hw, "The driver for the device detected an older version (%u.%u) of the NVM image than expected (%u.%u). Please update the NVM image.\n",
+			 hw->api_maj_ver, hw->api_min_ver,
+			 EXP_FW_API_VER_MAJOR, EXP_FW_API_VER_MINOR);
 	}
 	return true;
 }
@@ -584,6 +605,10 @@ static enum ice_status ice_init_ctrlq(struct ice_hw *hw, enum ice_ctl_q q_type)
 		ice_adminq_init_regs(hw);
 		cq = &hw->adminq;
 		break;
+	case ICE_CTL_Q_SB:
+		ice_sb_init_regs(hw);
+		cq = &hw->sbq;
+		break;
 	case ICE_CTL_Q_MAILBOX:
 		ice_mailbox_init_regs(hw);
 		cq = &hw->mailboxq;
@@ -621,13 +646,27 @@ init_ctrlq_free_sq:
 }
 
 /**
+ * ice_is_sbq_supported - is the sideband queue supported
+ * @hw: pointer to the hardware structure
+ *
+ * Returns true if the sideband control queue interface is
+ * supported for the device, false otherwise
+ */
+static bool ice_is_sbq_supported(struct ice_hw *hw)
+{
+	return ice_is_generic_mac(hw);
+}
+
+/**
  * ice_shutdown_ctrlq - shutdown routine for any control queue
  * @hw: pointer to the hardware structure
  * @q_type: specific Control queue type
+ * @unloading: is the driver unloading itself
  *
  * NOTE: this function does not destroy the control queue locks.
  */
-static void ice_shutdown_ctrlq(struct ice_hw *hw, enum ice_ctl_q q_type)
+static void ice_shutdown_ctrlq(struct ice_hw *hw, enum ice_ctl_q q_type,
+			       bool unloading)
 {
 	struct ice_ctl_q_info *cq;
 
@@ -637,7 +676,10 @@ static void ice_shutdown_ctrlq(struct ice_hw *hw, enum ice_ctl_q q_type)
 	case ICE_CTL_Q_ADMIN:
 		cq = &hw->adminq;
 		if (ice_check_sq_alive(hw, cq))
-			ice_aq_q_shutdown(hw, true);
+			ice_aq_q_shutdown(hw, unloading);
+		break;
+	case ICE_CTL_Q_SB:
+		cq = &hw->sbq;
 		break;
 	case ICE_CTL_Q_MAILBOX:
 		cq = &hw->mailboxq;
@@ -653,18 +695,22 @@ static void ice_shutdown_ctrlq(struct ice_hw *hw, enum ice_ctl_q q_type)
 /**
  * ice_shutdown_all_ctrlq - shutdown routine for all control queues
  * @hw: pointer to the hardware structure
+ * @unloading: is the driver unloading itself
  *
  * NOTE: this function does not destroy the control queue locks. The driver
  * may call this at runtime to shutdown and later restart control queues, such
  * as in response to a reset event.
  */
-void ice_shutdown_all_ctrlq(struct ice_hw *hw)
+void ice_shutdown_all_ctrlq(struct ice_hw *hw, bool unloading)
 {
 	ice_debug(hw, ICE_DBG_TRACE, "%s\n", __func__);
 	/* Shutdown FW admin queue */
-	ice_shutdown_ctrlq(hw, ICE_CTL_Q_ADMIN);
+	ice_shutdown_ctrlq(hw, ICE_CTL_Q_ADMIN, unloading);
+	/* Shutdown PHY Sideband */
+	if (ice_is_sbq_supported(hw))
+		ice_shutdown_ctrlq(hw, ICE_CTL_Q_SB, unloading);
 	/* Shutdown PF-VF Mailbox */
-	ice_shutdown_ctrlq(hw, ICE_CTL_Q_MAILBOX);
+	ice_shutdown_ctrlq(hw, ICE_CTL_Q_MAILBOX, unloading);
 }
 
 /**
@@ -698,12 +744,21 @@ enum ice_status ice_init_all_ctrlq(struct ice_hw *hw)
 			break;
 
 		ice_debug(hw, ICE_DBG_AQ_MSG, "Retry Admin Queue init due to FW critical error\n");
-		ice_shutdown_ctrlq(hw, ICE_CTL_Q_ADMIN);
+		ice_shutdown_ctrlq(hw, ICE_CTL_Q_ADMIN, true);
 		ice_msec_delay(ICE_CTL_Q_ADMIN_INIT_MSEC, true);
 	} while (retry++ < ICE_CTL_Q_ADMIN_INIT_TIMEOUT);
 
 	if (status)
 		return status;
+	/* sideband control queue (SBQ) interface is not supported on some
+	 * devices. Initialize if supported, else fallback to the admin queue
+	 * interface
+	 */
+	if (ice_is_sbq_supported(hw)) {
+		status = ice_init_ctrlq(hw, ICE_CTL_Q_SB);
+		if (status)
+			return status;
+	}
 	/* Init Mailbox queue */
 	return ice_init_ctrlq(hw, ICE_CTL_Q_MAILBOX);
 }
@@ -739,6 +794,8 @@ static void ice_init_ctrlq_locks(struct ice_ctl_q_info *cq)
 enum ice_status ice_create_all_ctrlq(struct ice_hw *hw)
 {
 	ice_init_ctrlq_locks(&hw->adminq);
+	if (ice_is_sbq_supported(hw))
+		ice_init_ctrlq_locks(&hw->sbq);
 	ice_init_ctrlq_locks(&hw->mailboxq);
 
 	return ice_init_all_ctrlq(hw);
@@ -768,9 +825,11 @@ static void ice_destroy_ctrlq_locks(struct ice_ctl_q_info *cq)
 void ice_destroy_all_ctrlq(struct ice_hw *hw)
 {
 	/* shut down all the control queues first */
-	ice_shutdown_all_ctrlq(hw);
+	ice_shutdown_all_ctrlq(hw, true);
 
 	ice_destroy_ctrlq_locks(&hw->adminq);
+	if (ice_is_sbq_supported(hw))
+		ice_destroy_ctrlq_locks(&hw->sbq);
 	ice_destroy_ctrlq_locks(&hw->mailboxq);
 }
 
@@ -882,7 +941,7 @@ static bool ice_sq_done(struct ice_hw *hw, struct ice_ctl_q_info *cq)
  * This is the main send command routine for the ATQ. It runs the queue,
  * cleans the queue, etc.
  */
-static enum ice_status
+enum ice_status
 ice_sq_send_cmd_nolock(struct ice_hw *hw, struct ice_ctl_q_info *cq,
 		       struct ice_aq_desc *desc, void *buf, u16 buf_size,
 		       struct ice_sq_cd *cd)

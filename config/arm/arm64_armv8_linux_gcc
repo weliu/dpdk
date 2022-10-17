@@ -1,6 +1,6 @@
 [binaries]
-c = 'aarch64-linux-gnu-gcc'
-cpp = 'aarch64-linux-gnu-cpp'
+c = ['ccache', 'aarch64-linux-gnu-gcc']
+cpp = ['ccache', 'aarch64-linux-gnu-g++']
 ar = 'aarch64-linux-gnu-gcc-ar'
 strip = 'aarch64-linux-gnu-strip'
 pkgconfig = 'aarch64-linux-gnu-pkg-config'
@@ -14,7 +14,4 @@ endian = 'little'
 
 [properties]
 # Generate binaries that are portable across all Armv8 machines
-implementer_id = 'generic'
-part_number = 'generic'
-max_lcores = 256
-max_numa_nodes = 4
+platform = 'generic'

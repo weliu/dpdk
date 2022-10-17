@@ -37,10 +37,11 @@ struct bnxt_tx_queue {
 
 void bnxt_free_txq_stats(struct bnxt_tx_queue *txq);
 void bnxt_free_tx_mbufs(struct bnxt *bp);
-void bnxt_tx_queue_release_op(void *tx_queue);
+void bnxt_tx_queue_release_op(struct rte_eth_dev *dev, uint16_t queue_idx);
 int bnxt_tx_queue_setup_op(struct rte_eth_dev *eth_dev,
 			       uint16_t queue_idx,
 			       uint16_t nb_desc,
 			       unsigned int socket_id,
 			       const struct rte_eth_txconf *tx_conf);
+uint64_t bnxt_get_tx_port_offloads(struct bnxt *bp);
 #endif

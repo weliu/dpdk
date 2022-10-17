@@ -66,7 +66,7 @@ The EAL options are as follows:
 
 * ``-d``:
   Add a driver or driver directory to be loaded.
-  The application should use this option to load the pmd drivers
+  The application should use this option to load the PMDs
   that are built as shared libraries.
 
 * ``-m MB``:
@@ -82,7 +82,7 @@ The EAL options are as follows:
 * ``--huge-dir``:
   The directory where hugetlbfs is mounted.
 
-* ``mbuf-pool-ops-name``:
+* ``--mbuf-pool-ops-name``:
   Pool ops name for mbuf to use.
 
 * ``--file-prefix``:
@@ -138,11 +138,16 @@ This can be useful when using other processors to understand the mapping of the 
 
 .. note::
 
-    A more graphical view of the logical core layout may be obtained using the ``lstopo`` Linux utility.
-    On Fedora Linux, this may be installed and run using the following command::
+   A more graphical view of the logical core layout
+   may be obtained using the ``lstopo`` Linux utility.
+   On Fedora, this may be installed and run using the following commands::
 
-        sudo yum install hwloc
-        ./lstopo
+      sudo yum install hwloc
+      lstopo
+
+   This command produces a quite short textual output::
+
+      lstopo-no-graphics --merge
 
 .. warning::
 

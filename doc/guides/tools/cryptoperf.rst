@@ -146,19 +146,22 @@ The following are the application command-line options:
 
         Set device type, where ``name`` is one of the following::
 
-           crypto_null
-           crypto_aesni_mb
            crypto_aesni_gcm
-           crypto_openssl
-           crypto_qat
-           crypto_snow3g
-           crypto_kasumi
-           crypto_zuc
+           crypto_aesni_mb
+           crypto_armv8
+           crypto_cn9k
+           crypto_cn10k
            crypto_dpaa_sec
            crypto_dpaa2_sec
-           crypto_armv8
-           crypto_scheduler
+           crypto_kasumi
            crypto_mvsam
+           crypto_null
+           crypto_octeontx
+           crypto_openssl
+           crypto_qat
+           crypto_scheduler
+           crypto_snow3g
+           crypto_zuc
 
 * ``--optype <name>``
 
@@ -171,6 +174,7 @@ The following are the application command-line options:
            aead
            pdcp
            docsis
+           modex
 
         For GCM/CCM algorithms you should use aead flag.
 
@@ -318,7 +322,7 @@ The following are the application command-line options:
 
 * ``--pdcp-domain <control/user>``
 
-        Set PDCP domain to specify Control/user plane.
+        Set PDCP domain to specify short_mac/control/user plane.
 
 * ``--docsis-hdr-sz <n>``
 
@@ -327,6 +331,15 @@ The following are the application command-line options:
 * ``--pdcp-ses-hfn-en``
 
         Enable fixed session based HFN instead of per packet HFN.
+
+* ``--enable-sdap``
+
+        Enable Service Data Adaptation Protocol.
+
+* ``--modex-len <n>``
+
+        Set modex length for asymmetric crypto perf test.
+        Supported lengths are 60, 128, 255, 448. Default length is 128.
 
 Test Vector File
 ~~~~~~~~~~~~~~~~
@@ -471,13 +484,9 @@ Dependencies
 
 The following python modules must be installed to run the script:
 
-* img2pdf
+.. code-block:: console
 
-* plotly
-
-* pandas
-
-* glob
+   pip3 install img2pdf plotly pandas psutil kaleido
 
 
 Test Configuration

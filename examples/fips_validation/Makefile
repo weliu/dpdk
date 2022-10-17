@@ -17,8 +17,10 @@ SRCS-y += fips_dev_self_test.c
 SRCS-y += fips_validation_xts.c
 SRCS-y += main.c
 
+PKGCONF ?= pkg-config
+
 # Build using pkg-config variables if possible
-ifneq ($(shell pkg-config --exists libdpdk && echo 0),0)
+ifneq ($(shell $(PKGCONF) --exists libdpdk && echo 0),0)
 $(error "no installation of DPDK found")
 endif
 
@@ -29,12 +31,16 @@ shared: build/$(APP)-shared
 static: build/$(APP)-static
 	ln -sf $(APP)-static build/$(APP)
 
-PKGCONF ?= pkg-config
-
 PC_FILE := $(shell $(PKGCONF) --path libdpdk 2>/dev/null)
 CFLAGS += -O3 $(shell $(PKGCONF) --cflags libdpdk)
 LDFLAGS_SHARED = $(shell $(PKGCONF) --libs libdpdk)
 LDFLAGS_STATIC = $(shell $(PKGCONF) --static --libs libdpdk)
+
+JANSSON := $(shell $(PKGCONF) --exists jansson; echo $$?)
+ifeq ($(JANSSON), 0)
+LDFLAGS += $(shell $(PKGCONF) --libs jansson)
+CFLAGS += -DUSE_JANSSON
+endif
 
 ifeq ($(MAKECMDGOALS),static)
 # check for broken pkg-config

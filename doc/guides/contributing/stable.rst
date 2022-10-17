@@ -18,6 +18,10 @@ backported fixes over an extended period of time. This provides downstream
 consumers of DPDK with a stable target on which to base applications or
 packages.
 
+The primary characteristics of stable releases is that they attempt to
+fix issues and not introduce any new regressions while keeping backwards
+compatibility with the initial release of the stable version.
+
 The Long Term Support release (LTS) is a designation applied to a Stable
 Release to indicate longer term support.
 
@@ -34,7 +38,7 @@ within one month of that version being initially released.
 A Stable Release is used to backport fixes from an ``N`` release back to an
 ``N-1`` release, for example, from 16.11 to 16.07.
 
-The duration of a stable is one complete release cycle (3 months). It can be
+The duration of a stable is one complete release cycle (4 months). It can be
 longer, up to 1 year, if a maintainer continues to support the stable branch,
 or if users supply backported fixes, however the explicit commitment should be
 for one release cycle.
@@ -57,8 +61,10 @@ https://git.dpdk.org/dpdk-stable where bugfixes will be backported to.
 A LTS release may align with the declaration of a new major ABI version,
 please read the :doc:`abi_policy` for more information.
 
-It is anticipated that there will be at least 4 releases per year of the LTS
-or approximately 1 every 3 months. However, the cadence can be shorter or
+It is anticipated that there will be at least 3 releases per year of the LTS
+or approximately 1 every 4 months. This is done to align with the DPDK main
+branch releases so that fixes have already gone through validation as part of
+the DPDK main branch release validation. However, the cadence can be shorter or
 longer depending on the number and criticality of the backported
 fixes. Releases should be coordinated with the validation engineers to ensure
 that a tagged release has been tested.
@@ -93,14 +99,32 @@ commit message body as follows::
 
 Fixes not suitable for backport should not include the ``Cc: stable@dpdk.org`` tag.
 
-Features should not be backported to stable releases. It may be acceptable, in
-limited cases, to back port features for the LTS release where:
+To support the goal of stability and not introducing regressions,
+new code being introduced is limited to bug fixes.
+New features should not be backported to stable releases.
 
-* There is a justifiable use case (for example a new PMD).
-* The change is non-invasive.
-* The work of preparing the backport is done by the proposer.
-* There is support within the community.
+In some limited cases, it may be acceptable to backport a new feature
+to a stable release. Some of the factors which impact the decision by
+stable maintainers are as follows:
 
+* Does the feature break API/ABI?
+* Does the feature break backwards compatibility?
+* Is it for the latest LTS release (to avoid LTS upgrade issues)?
+* Is there a commitment from the proposer or affiliation to validate the feature
+  and check for regressions in related functionality?
+* Is there a track record of the proposer or affiliation validating stable releases?
+* Is it obvious that the feature will not impact existing functionality?
+* How intrusive is the code change?
+* What is the scope of the code change?
+* Does it impact common components or vendor specific?
+* Is there a justifiable use case (a clear user need)?
+* Is there a community consensus about the backport?
+
+Performance improvements are generally not considered to be fixes,
+but may be considered in some cases where:
+
+* It is fixing a performance regression that occurred previously.
+* An existing feature in LTS is not usable as intended without it.
 
 The Stable Mailing List
 -----------------------

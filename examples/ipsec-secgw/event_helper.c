@@ -1,6 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright (C) 2020 Marvell International Ltd.
  */
+#include <stdlib.h>
+
 #include <rte_bitmap.h>
 #include <rte_ethdev.h>
 #include <rte_eventdev.h>
@@ -10,6 +12,10 @@
 #include <stdbool.h>
 
 #include "event_helper.h"
+#include "ipsec-secgw.h"
+
+#define DEFAULT_VECTOR_SIZE  16
+#define DEFAULT_VECTOR_TMO   102400
 
 static volatile bool eth_core_running;
 
@@ -712,6 +718,16 @@ eh_initialize_eventdev(struct eventmode_conf *em_conf)
 		}
 	}
 
+	return 0;
+}
+
+static int
+eh_start_eventdev(struct eventmode_conf *em_conf)
+{
+	struct eventdev_params *eventdev_config;
+	int nb_eventdev = em_conf->nb_eventdev;
+	int i, ret;
+
 	/* Start event devices */
 	for (i = 0; i < nb_eventdev; i++) {
 
@@ -729,6 +745,45 @@ eh_initialize_eventdev(struct eventmode_conf *em_conf)
 }
 
 static int
+eh_event_vector_limits_validate(struct eventmode_conf *em_conf,
+				uint8_t ev_dev_id, uint8_t ethdev_id)
+{
+	struct rte_event_eth_rx_adapter_vector_limits limits = {0};
+	uint16_t vector_size = em_conf->ext_params.vector_size;
+	int ret;
+
+	ret = rte_event_eth_rx_adapter_vector_limits_get(ev_dev_id, ethdev_id,
+							 &limits);
+	if (ret) {
+		EH_LOG_ERR("failed to get vector limits");
+		return ret;
+	}
+
+	if (vector_size < limits.min_sz || vector_size > limits.max_sz) {
+		EH_LOG_ERR("Vector size [%d] not within limits min[%d] max[%d]",
+			   vector_size, limits.min_sz, limits.max_sz);
+		return -EINVAL;
+	}
+
+	if (limits.log2_sz && !rte_is_power_of_2(vector_size)) {
+		EH_LOG_ERR("Vector size [%d] not power of 2", vector_size);
+		return -EINVAL;
+	}
+
+	if (em_conf->vector_tmo_ns > limits.max_timeout_ns ||
+	    em_conf->vector_tmo_ns < limits.min_timeout_ns) {
+		EH_LOG_ERR("Vector timeout [%" PRIu64
+			   "] not within limits max[%" PRIu64
+			   "] min[%" PRIu64 "]",
+			   em_conf->vector_tmo_ns,
+			   limits.max_timeout_ns,
+			   limits.min_timeout_ns);
+		return -EINVAL;
+	}
+	return 0;
+}
+
+static int
 eh_rx_adapter_configure(struct eventmode_conf *em_conf,
 		struct rx_adapter_conf *adapter)
 {
@@ -736,9 +791,11 @@ eh_rx_adapter_configure(struct eventmode_conf *em_conf,
 	struct rte_event_dev_info evdev_default_conf = {0};
 	struct rte_event_port_conf port_conf = {0};
 	struct rx_adapter_connection_info *conn;
+	uint32_t service_id, socket_id, nb_elem;
+	struct rte_mempool *vector_pool = NULL;
+	uint32_t lcore_id = rte_lcore_id();
+	int ret, portid, nb_ports = 0;
 	uint8_t eventdev_id;
-	uint32_t service_id;
-	int ret;
 	int j;
 
 	/* Get event dev ID */
@@ -751,6 +808,31 @@ eh_rx_adapter_configure(struct eventmode_conf *em_conf,
 		return ret;
 	}
 
+	RTE_ETH_FOREACH_DEV(portid)
+		if ((em_conf->eth_portmask & (1 << portid)))
+			nb_ports++;
+
+	if (em_conf->ext_params.event_vector) {
+		socket_id = rte_lcore_to_socket_id(lcore_id);
+
+		if (em_conf->vector_pool_sz) {
+			nb_elem = em_conf->vector_pool_sz;
+		} else {
+			nb_elem = (nb_bufs_in_pool /
+				   em_conf->ext_params.vector_size) + 1;
+			if (per_port_pool)
+				nb_elem = nb_ports * nb_elem;
+			nb_elem = RTE_MAX(512U, nb_elem);
+		}
+		nb_elem += rte_lcore_count() * 32;
+		vector_pool = rte_event_vector_pool_create(
+			"vector_pool", nb_elem, 32,
+			em_conf->ext_params.vector_size, socket_id);
+		if (vector_pool == NULL) {
+			EH_LOG_ERR("failed to create event vector pool");
+			return -ENOMEM;
+		}
+	}
 	/* Setup port conf */
 	port_conf.new_event_threshold = 1200;
 	port_conf.dequeue_depth =
@@ -775,6 +857,20 @@ eh_rx_adapter_configure(struct eventmode_conf *em_conf,
 		queue_conf.ev.queue_id = conn->eventq_id;
 		queue_conf.ev.sched_type = em_conf->ext_params.sched_type;
 		queue_conf.ev.event_type = RTE_EVENT_TYPE_ETHDEV;
+
+		if (em_conf->ext_params.event_vector) {
+			ret = eh_event_vector_limits_validate(em_conf,
+							      eventdev_id,
+							      conn->ethdev_id);
+			if (ret)
+				return ret;
+
+			queue_conf.vector_sz = em_conf->ext_params.vector_size;
+			queue_conf.vector_timeout_ns = em_conf->vector_tmo_ns;
+			queue_conf.vector_mp = vector_pool;
+			queue_conf.rx_queue_flags =
+				RTE_EVENT_ETH_RX_ADAPTER_QUEUE_EVENT_VECTOR;
+		}
 
 		/* Add queue to the adapter */
 		ret = rte_event_eth_rx_adapter_queue_add(adapter->adapter_id,
@@ -1280,7 +1376,7 @@ eh_display_rx_adapter_conf(struct eventmode_conf *em_conf)
 	for (i = 0; i < nb_rx_adapter; i++) {
 		adapter = &(em_conf->rx_adapter[i]);
 		sprintf(print_buf,
-			"\tRx adaper ID: %-2d\tConnections: %-2d\tEvent dev ID: %-2d",
+			"\tRx adapter ID: %-2d\tConnections: %-2d\tEvent dev ID: %-2d",
 			adapter->adapter_id,
 			adapter->nb_connections,
 			adapter->eventdev_id);
@@ -1475,6 +1571,9 @@ eh_conf_init(void)
 
 	rte_bitmap_set(em_conf->eth_core_mask, eth_core_id);
 
+	em_conf->ext_params.vector_size = DEFAULT_VECTOR_SIZE;
+	em_conf->vector_tmo_ns = DEFAULT_VECTOR_TMO;
+
 	return conf;
 
 free_bitmap:
@@ -1609,6 +1708,13 @@ eh_devs_init(struct eh_conf *conf)
 	ret = eh_initialize_tx_adapter(em_conf);
 	if (ret < 0) {
 		EH_LOG_ERR("Failed to initialize tx adapter %d", ret);
+		return ret;
+	}
+
+	/* Start eventdev */
+	ret = eh_start_eventdev(em_conf);
+	if (ret < 0) {
+		EH_LOG_ERR("Failed to start event dev %d", ret);
 		return ret;
 	}
 

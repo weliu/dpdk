@@ -20,7 +20,7 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include "rte_dpaa2_mempool.h"
 
 #include "fslmc_vfio.h"
@@ -263,6 +263,29 @@ aligned:
 	}
 }
 
+int rte_dpaa2_bpid_info_init(struct rte_mempool *mp)
+{
+	struct dpaa2_bp_info *bp_info = mempool_to_bpinfo(mp);
+	uint32_t bpid = bp_info->bpid;
+
+	if (!rte_dpaa2_bpid_info) {
+		rte_dpaa2_bpid_info = (struct dpaa2_bp_info *)rte_malloc(NULL,
+				      sizeof(struct dpaa2_bp_info) * MAX_BPID,
+				      RTE_CACHE_LINE_SIZE);
+		if (rte_dpaa2_bpid_info == NULL)
+			return -ENOMEM;
+		memset(rte_dpaa2_bpid_info, 0,
+		       sizeof(struct dpaa2_bp_info) * MAX_BPID);
+	}
+
+	rte_dpaa2_bpid_info[bpid].meta_data_size = sizeof(struct rte_mbuf)
+				+ rte_pktmbuf_priv_size(mp);
+	rte_dpaa2_bpid_info[bpid].bp_list = bp_info->bp_list;
+	rte_dpaa2_bpid_info[bpid].bpid = bpid;
+
+	return 0;
+}
+
 uint16_t
 rte_dpaa2_mbuf_pool_bpid(struct rte_mempool *mp)
 {
@@ -455,6 +478,6 @@ static const struct rte_mempool_ops dpaa2_mpool_ops = {
 	.populate = dpaa2_populate,
 };
 
-MEMPOOL_REGISTER_OPS(dpaa2_mpool_ops);
+RTE_MEMPOOL_REGISTER_OPS(dpaa2_mpool_ops);
 
-RTE_LOG_REGISTER(dpaa2_logtype_mempool, mempool.dpaa2, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa2_logtype_mempool, NOTICE);

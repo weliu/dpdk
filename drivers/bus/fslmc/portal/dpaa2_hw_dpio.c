@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
  *   Copyright (c) 2016 Freescale Semiconductor, Inc. All rights reserved.
- *   Copyright 2016-2019 NXP
+ *   Copyright 2016-2022 NXP
  *
  */
 #include <unistd.h>
@@ -19,9 +19,9 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
-#include <sys/syscall.h>
 #include <sys/epoll.h>
-#include<sys/eventfd.h>
+#include <sys/eventfd.h>
+#include <sys/syscall.h>
 
 #include <rte_mbuf.h>
 #include <ethdev_driver.h>
@@ -30,10 +30,10 @@
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
 #include <rte_kvargs.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 
 #include <fslmc_logs.h>
-#include <rte_fslmc.h>
+#include <bus_fslmc_driver.h>
 #include "dpaa2_hw_pvt.h"
 #include "dpaa2_hw_dpio.h"
 #include <mc/fsl_dpmng.h>
@@ -149,8 +149,7 @@ dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int cpu_id)
 	if (!token) {
 		DPAA2_BUS_WARN("Failed to get interrupt id for dpio.%d",
 			       dpio_id);
-		if (temp)
-			free(temp);
+		free(temp);
 		fclose(file);
 		return;
 	}
@@ -169,16 +168,16 @@ dpaa2_affine_dpio_intr_to_respective_core(int32_t dpio_id, int cpu_id)
 	fclose(file);
 }
 
-static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
+static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev)
 {
 	struct epoll_event epoll_ev;
 	int eventfd, dpio_epoll_fd, ret;
 	int threshold = 0x3, timeout = 0xFF;
 
 	dpio_epoll_fd = epoll_create(1);
-	ret = rte_dpaa2_intr_enable(&dpio_dev->intr_handle, 0);
+	ret = rte_dpaa2_intr_enable(dpio_dev->intr_handle, 0);
 	if (ret) {
-		DPAA2_BUS_ERR("Interrupt registeration failed");
+		DPAA2_BUS_ERR("Interrupt registration failed");
 		return -1;
 	}
 
@@ -195,7 +194,7 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 	qbman_swp_dqrr_thrshld_write(dpio_dev->sw_portal, threshold);
 	qbman_swp_intr_timeout_write(dpio_dev->sw_portal, timeout);
 
-	eventfd = dpio_dev->intr_handle.fd;
+	eventfd = rte_intr_fd_get(dpio_dev->intr_handle);
 	epoll_ev.events = EPOLLIN | EPOLLPRI | EPOLLET;
 	epoll_ev.data.fd = eventfd;
 
@@ -206,8 +205,6 @@ static int dpaa2_dpio_intr_init(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 	}
 	dpio_dev->epoll_fd = dpio_epoll_fd;
 
-	dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, cpu_id);
-
 	return 0;
 }
 
@@ -215,7 +212,7 @@ static void dpaa2_dpio_intr_deinit(struct dpaa2_dpio_dev *dpio_dev)
 {
 	int ret;
 
-	ret = rte_dpaa2_intr_disable(&dpio_dev->intr_handle, 0);
+	ret = rte_dpaa2_intr_disable(dpio_dev->intr_handle, 0);
 	if (ret)
 		DPAA2_BUS_ERR("DPIO interrupt disable failed");
 
@@ -243,10 +240,11 @@ dpaa2_configure_stashing(struct dpaa2_dpio_dev *dpio_dev, int cpu_id)
 	}
 
 #ifdef RTE_EVENT_DPAA2
-	if (dpaa2_dpio_intr_init(dpio_dev, cpu_id)) {
+	if (dpaa2_dpio_intr_init(dpio_dev)) {
 		DPAA2_BUS_ERR("Interrupt registration failed for dpio");
 		return -1;
 	}
+	dpaa2_affine_dpio_intr_to_respective_core(dpio_dev->hw_id, cpu_id);
 #endif
 
 	return 0;
@@ -278,8 +276,8 @@ static struct dpaa2_dpio_dev *dpaa2_get_qbman_swp(void)
 		return NULL;
 	}
 
-	DPAA2_BUS_DEBUG("New Portal %p (%d) affined thread - %lu",
-			dpio_dev, dpio_dev->index, syscall(SYS_gettid));
+	DPAA2_BUS_DEBUG("New Portal %p (%d) affined thread - %u",
+			dpio_dev, dpio_dev->index, rte_gettid());
 
 	/* Set the Stashing Destination */
 	cpu_id = dpaa2_get_core_id();
@@ -310,7 +308,7 @@ int
 dpaa2_affine_qbman_swp(void)
 {
 	struct dpaa2_dpio_dev *dpio_dev;
-	uint64_t tid = syscall(SYS_gettid);
+	uint64_t tid = rte_gettid();
 
 	/* Populate the dpaa2_io_portal structure */
 	if (!RTE_PER_LCORE(_dpaa2_io).dpio_dev) {
@@ -332,7 +330,7 @@ int
 dpaa2_affine_qbman_ethrx_swp(void)
 {
 	struct dpaa2_dpio_dev *dpio_dev;
-	uint64_t tid = syscall(SYS_gettid);
+	uint64_t tid = rte_gettid();
 
 	/* Populate the dpaa2_io_portal structure */
 	if (!RTE_PER_LCORE(_dpaa2_io).ethrx_dpio_dev) {
@@ -388,6 +386,14 @@ dpaa2_create_dpio_device(int vdev_fd,
 	rte_atomic16_init(&dpio_dev->ref_count);
 	/* Using single portal  for all devices */
 	dpio_dev->mc_portal = dpaa2_get_mcp_ptr(MC_PORTAL_INDEX);
+
+	/* Allocate interrupt instance */
+	dpio_dev->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_SHARED);
+	if (!dpio_dev->intr_handle) {
+		DPAA2_BUS_ERR("Failed to allocate intr handle");
+		goto err;
+	}
 
 	dpio_dev->dpio = rte_zmalloc(NULL, sizeof(struct fsl_mc_io),
 				     RTE_CACHE_LINE_SIZE);
@@ -491,7 +497,7 @@ dpaa2_create_dpio_device(int vdev_fd,
 	io_space_count++;
 	dpio_dev->index = io_space_count;
 
-	if (rte_dpaa2_vfio_setup_intr(&dpio_dev->intr_handle, vdev_fd, 1)) {
+	if (rte_dpaa2_vfio_setup_intr(dpio_dev->intr_handle, vdev_fd, 1)) {
 		DPAA2_BUS_ERR("Fail to setup interrupt for %d",
 			      dpio_dev->hw_id);
 		goto err;
@@ -539,6 +545,7 @@ err:
 		rte_free(dpio_dev->dpio);
 	}
 
+	rte_intr_instance_free(dpio_dev->intr_handle);
 	rte_free(dpio_dev);
 
 	/* For each element in the list, cleanup */
@@ -550,6 +557,7 @@ err:
 				dpio_dev->token);
 			rte_free(dpio_dev->dpio);
 		}
+		rte_intr_instance_free(dpio_dev->intr_handle);
 		rte_free(dpio_dev);
 	}
 
@@ -565,8 +573,7 @@ dpaa2_free_dq_storage(struct queue_storage_info_t *q_storage)
 	int i = 0;
 
 	for (i = 0; i < NUM_DQS_PER_QUEUE; i++) {
-		if (q_storage->dq_storage[i])
-			rte_free(q_storage->dq_storage[i]);
+		rte_free(q_storage->dq_storage[i]);
 	}
 }
 
@@ -607,7 +614,7 @@ dpaa2_free_eq_descriptors(void)
 
 		if (qbman_result_eqresp_rc(eqresp)) {
 			txq = eqresp_meta->dpaa2_q;
-			txq->cb_eqresp_free(dpio_dev->eqresp_ci);
+			txq->cb_eqresp_free(dpio_dev->eqresp_ci, txq);
 		}
 		qbman_result_eqresp_set_rspid(eqresp, 0);
 

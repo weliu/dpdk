@@ -3,6 +3,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include <unistd.h>
 #include <signal.h>
@@ -80,16 +81,15 @@ struct app_stats prev_app_stats;
 
 static const struct rte_eth_conf port_conf_default = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_RSS,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
+		.mq_mode = RTE_ETH_MQ_RX_RSS,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.rx_adv_conf = {
 		.rss_conf = {
-			.rss_hf = ETH_RSS_IP | ETH_RSS_UDP |
-				ETH_RSS_TCP | ETH_RSS_SCTP,
+			.rss_hf = RTE_ETH_RSS_IP | RTE_ETH_RSS_UDP |
+				RTE_ETH_RSS_TCP | RTE_ETH_RSS_SCTP,
 		}
 	},
 };
@@ -109,7 +109,7 @@ static inline int
 port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 {
 	struct rte_eth_conf port_conf = port_conf_default;
-	const uint16_t rxRings = 1, txRings = rte_lcore_count() - 1;
+	const uint16_t rxRings = 1, txRings = 1;
 	int retval;
 	uint16_t q;
 	uint16_t nb_rxd = RX_RING_SIZE;
@@ -127,9 +127,9 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 		return retval;
 	}
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 
 	port_conf.rx_adv_conf.rss_conf.rss_hf &=
 		dev_info.flow_type_rss_offloads;
@@ -201,10 +201,7 @@ port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
 	printf("Port %u MAC: %02"PRIx8" %02"PRIx8" %02"PRIx8
 			" %02"PRIx8" %02"PRIx8" %02"PRIx8"\n",
-			port,
-			addr.addr_bytes[0], addr.addr_bytes[1],
-			addr.addr_bytes[2], addr.addr_bytes[3],
-			addr.addr_bytes[4], addr.addr_bytes[5]);
+			port, RTE_ETHER_ADDR_BYTES(&addr));
 
 	retval = rte_eth_promiscuous_enable(port);
 	if (retval != 0)
@@ -234,7 +231,7 @@ lcore_rx(struct lcore_params *p)
 		if ((enabled_port_mask & (1 << port)) == 0)
 			continue;
 
-		if (rte_eth_dev_socket_id(port) > 0 &&
+		if (rte_eth_dev_socket_id(port) >= 0 &&
 				rte_eth_dev_socket_id(port) != socket_id)
 			printf("WARNING, port %u is on remote NUMA node to "
 					"RX thread.\n\tPerformance will not "
@@ -265,8 +262,8 @@ lcore_rx(struct lcore_params *p)
  * packets are then send straight to the tx core.
  */
 #if 0
-	rte_distributor_process(d, bufs, nb_rx);
-	const uint16_t nb_ret = rte_distributor_returned_pktsd,
+		rte_distributor_process(p->d, bufs, nb_rx);
+		const uint16_t nb_ret = rte_distributor_returned_pkts(p->d,
 			bufs, BURST_SIZE*2);
 
 		app_stats.rx.returned_pkts += nb_ret;
@@ -409,7 +406,7 @@ lcore_tx(struct rte_ring *in_r)
 		if ((enabled_port_mask & (1 << port)) == 0)
 			continue;
 
-		if (rte_eth_dev_socket_id(port) > 0 &&
+		if (rte_eth_dev_socket_id(port) >= 0 &&
 				rte_eth_dev_socket_id(port) != socket_id)
 			printf("WARNING, port %u is on remote NUMA node to "
 					"TX thread.\n\tPerformance will not "
@@ -931,6 +928,9 @@ main(int argc, char *argv[])
 
 	rte_free(pd);
 	rte_free(pr);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

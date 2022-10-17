@@ -13,6 +13,7 @@
 #include <rte_debug.h>
 #include <rte_eal.h>
 #include <rte_log.h>
+#include <rte_string_fns.h>
 
 #include "vm_power_cli_guest.h"
 #include "parse.h"
@@ -199,6 +200,9 @@ main(int argc, char **argv)
 		rte_power_init(lcore_id);
 	}
 	run_cli(NULL);
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return 0;
 }

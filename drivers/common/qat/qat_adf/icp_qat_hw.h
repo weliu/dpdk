@@ -46,7 +46,7 @@ enum icp_qat_hw_auth_algo {
 	ICP_QAT_HW_AUTH_ALGO_KASUMI_F9 = 12,
 	ICP_QAT_HW_AUTH_ALGO_SNOW_3G_UIA2 = 13,
 	ICP_QAT_HW_AUTH_ALGO_ZUC_3G_128_EIA3 = 14,
-	ICP_QAT_HW_AUTH_RESERVED_1 = 15,
+	ICP_QAT_HW_AUTH_ALGO_SM3 = 15,
 	ICP_QAT_HW_AUTH_RESERVED_2 = 16,
 	ICP_QAT_HW_AUTH_ALGO_SHA3_256 = 17,
 	ICP_QAT_HW_AUTH_RESERVED_3 = 18,
@@ -134,6 +134,7 @@ struct icp_qat_hw_auth_setup {
 #define ICP_QAT_HW_SHA224_STATE1_SZ 32
 #define ICP_QAT_HW_SHA3_224_STATE1_SZ 28
 #define ICP_QAT_HW_SHA256_STATE1_SZ 32
+#define ICP_QAT_HW_SM3_STATE1_SZ 32
 #define ICP_QAT_HW_SHA3_256_STATE1_SZ 32
 #define ICP_QAT_HW_SHA384_STATE1_SZ 64
 #define ICP_QAT_HW_SHA3_384_STATE1_SZ 48
@@ -153,6 +154,7 @@ struct icp_qat_hw_auth_setup {
 #define ICP_QAT_HW_SHA224_STATE2_SZ 32
 #define ICP_QAT_HW_SHA3_224_STATE2_SZ 0
 #define ICP_QAT_HW_SHA256_STATE2_SZ 32
+#define ICP_QAT_HW_SM3_STATE2_SZ 32
 #define ICP_QAT_HW_SHA3_256_STATE2_SZ 0
 #define ICP_QAT_HW_SHA384_STATE2_SZ 64
 #define ICP_QAT_HW_SHA3_384_STATE2_SZ 0
@@ -339,6 +341,16 @@ enum icp_qat_hw_cipher_convert {
 
 struct icp_qat_hw_cipher_algo_blk {
 	struct icp_qat_hw_cipher_config cipher_config;
+	uint8_t key[ICP_QAT_HW_CIPHER_MAX_KEY_SZ];
+} __rte_cache_aligned;
+
+struct icp_qat_hw_ucs_cipher_config {
+	uint32_t val;
+	uint32_t reserved[3];
+};
+
+struct icp_qat_hw_cipher_algo_blk20 {
+	struct icp_qat_hw_ucs_cipher_config cipher_config;
 	uint8_t key[ICP_QAT_HW_CIPHER_MAX_KEY_SZ];
 } __rte_cache_aligned;
 

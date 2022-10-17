@@ -18,6 +18,7 @@ enum dlb2_error {
 	DLB2_ST_LDB_QUEUES_UNAVAILABLE,
 	DLB2_ST_LDB_CREDITS_UNAVAILABLE,
 	DLB2_ST_DIR_CREDITS_UNAVAILABLE,
+	DLB2_ST_CREDITS_UNAVAILABLE,
 	DLB2_ST_SEQUENCE_NUMBERS_UNAVAILABLE,
 	DLB2_ST_INVALID_DOMAIN_ID,
 	DLB2_ST_INVALID_QID_INFLIGHT_ALLOCATION,
@@ -46,6 +47,8 @@ enum dlb2_error {
 	DLB2_ST_NO_MEMORY,
 	DLB2_ST_INVALID_LOCK_ID_COMP_LEVEL,
 	DLB2_ST_INVALID_COS_ID,
+	DLB2_ST_INVALID_CQ_WEIGHT_LIMIT,
+	DLB2_ST_FEATURE_UNAVAILABLE,
 };
 
 static const char dlb2_error_strings[][128] = {
@@ -57,6 +60,7 @@ static const char dlb2_error_strings[][128] = {
 	"DLB2_ST_LDB_QUEUES_UNAVAILABLE",
 	"DLB2_ST_LDB_CREDITS_UNAVAILABLE",
 	"DLB2_ST_DIR_CREDITS_UNAVAILABLE",
+	"DLB2_ST_CREDITS_UNAVAILABLE",
 	"DLB2_ST_SEQUENCE_NUMBERS_UNAVAILABLE",
 	"DLB2_ST_INVALID_DOMAIN_ID",
 	"DLB2_ST_INVALID_QID_INFLIGHT_ALLOCATION",
@@ -85,6 +89,8 @@ static const char dlb2_error_strings[][128] = {
 	"DLB2_ST_NO_MEMORY",
 	"DLB2_ST_INVALID_LOCK_ID_COMP_LEVEL",
 	"DLB2_ST_INVALID_COS_ID",
+	"DLB2_ST_INVALID_CQ_WEIGHT_LIMIT",
+	"DLB2_ST_FEATURE_UNAVAILABLE",
 };
 
 struct dlb2_cmd_response {
@@ -170,8 +176,15 @@ struct dlb2_create_sched_domain_args {
 	__u32 num_dir_ports;
 	__u32 num_atomic_inflights;
 	__u32 num_hist_list_entries;
-	__u32 num_ldb_credits;
-	__u32 num_dir_credits;
+	union {
+		struct {
+			__u32 num_ldb_credits;
+			__u32 num_dir_credits;
+		};
+		struct {
+			__u32 num_credits;
+		};
+	};
 	__u8 cos_strict;
 	__u8 padding1[3];
 };
@@ -195,9 +208,12 @@ struct dlb2_create_sched_domain_args {
  *	contiguous range of history list entries.
  * - num_ldb_credits: Amount of available load-balanced QE storage.
  * - num_dir_credits: Amount of available directed QE storage.
+ * - response.status: Detailed error code. In certain cases, such as if the
+ *	ioctl request arg is invalid, the driver won't set status.
  */
 struct dlb2_get_num_resources_args {
 	/* Output parameters */
+	struct dlb2_cmd_response response;
 	__u32 num_sched_domains;
 	__u32 num_ldb_queues;
 	__u32 num_ldb_ports;
@@ -206,8 +222,15 @@ struct dlb2_get_num_resources_args {
 	__u32 num_atomic_inflights;
 	__u32 num_hist_list_entries;
 	__u32 max_contiguous_hist_list_entries;
-	__u32 num_ldb_credits;
-	__u32 num_dir_credits;
+	union {
+		struct {
+			__u32 num_ldb_credits;
+			__u32 num_dir_credits;
+		};
+		struct {
+			__u32 num_credits;
+		};
+	};
 };
 
 /*
@@ -475,6 +498,7 @@ struct dlb2_create_dir_port_args {
 	__u16 cq_depth;
 	__u16 cq_depth_threshold;
 	__s32 queue_id;
+	__u8 is_producer;
 };
 
 /*
@@ -666,6 +690,31 @@ struct dlb2_pending_port_unmaps_args {
 	/* Input parameters */
 	__u32 port_id;
 	__u32 padding0;
+};
+
+/*
+ * DLB2_DOMAIN_CMD_ENABLE_CQ_WEIGHT: Enable QE-weight based scheduling on a
+ *      load-balanced port's CQ and configures the CQ's weight limit.
+ *
+ *      This must be called after creating the port but before starting the
+ *      domain. The QE weight limit must be non-zero and cannot exceed the
+ *      CQ's depth.
+ *
+ * Input parameters:
+ * - port_id: Load-balanced port ID.
+ * - limit: QE weight limit.
+ *
+ * Output parameters:
+ * - response.status: Detailed error code. In certain cases, such as if the
+ *      ioctl request arg is invalid, the driver won't set status.
+ * - response.id: number of unmaps in progress.
+ */
+struct dlb2_enable_cq_weight_args {
+	/* Output parameters */
+	struct dlb2_cmd_response response;
+	/* Input parameters */
+	__u32 port_id;
+	__u32 limit;
 };
 
 /*

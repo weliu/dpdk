@@ -421,12 +421,6 @@ Prerequisites
 
 See :doc:`../platform/dpaa2` for setup information
 
-Currently supported by DPDK:
-
-- NXP LSDK **19.08+**.
-- MC Firmware version **10.18.0** and higher.
-- Supported architectures:  **arm64 LE**.
-
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
 .. note::
@@ -551,7 +545,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The DPAA2 SoC family support a maximum of a 10240 jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 10240, frames
 up to 10240 bytes can still reach the host interface.
 
@@ -594,7 +588,7 @@ Supported Features
 
 The following capabilities are supported:
 
-- Level0 (root node) and Level1 are supported.
+- Level0 (root node), Level1 and Level2 are supported.
 - 1 private shaper at root node (port level) is supported.
 - 8 TX queues per port supported (1 channel per port)
 - Both SP and WFQ scheduling mechanisms are supported on all 8 queues.

@@ -120,6 +120,10 @@ The following are the application command-line options:
 
        Use burst mode event timer adapter as producer.
 
+* ``--prod_type_cryptodev``
+
+        Use crypto device as producer.
+
 * ``--timer_tick_nsec``
 
        Used to dictate number of nano seconds between bucket traversal of the
@@ -148,6 +152,16 @@ The following are the application command-line options:
        timeout is out of the supported range of event device it will be
        adjusted to the highest/lowest supported dequeue timeout supported.
 
+* ``--crypto_adptr_mode``
+
+        Set crypto adapter mode. Use 0 for OP_NEW (default) and 1 for
+        OP_FORWARD mode.
+
+* ``--crypto_op_type``
+
+        Set crypto operation type. Use 0 for symmetric crypto ops (default)
+        and 1 for asymmetric crypto ops.
+
 * ``--mbuf_sz``
 
        Set packet mbuf size. Can be used to configure Jumbo Frames. Only
@@ -155,7 +169,50 @@ The following are the application command-line options:
 
 * ``--max_pkt_sz``
 
-       Set max packet mbuf size. Can be used configure Rx/Tx scatter gather.
+       Set max packet mbuf size. Can be used to configure Rx/Tx scatter gather.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--prod_enq_burst_sz``
+
+       Set producer enqueue burst size. Can be used to configure the number of
+       events the producer(s) will enqueue as a burst to the event device.
+       Only applicable for `perf_queue` test.
+
+* ``--nb_eth_queues``
+
+       Configure multiple Rx queues per each ethernet port.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--enable_vector``
+
+       Enable event vector for Rx/Tx adapters.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--vector_size``
+
+       Vector size to configure for the Rx adapter.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--vector_tmo_ns``
+
+       Vector timeout nanoseconds to be configured for the Rx adapter.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--per_port_pool``
+
+       Configure unique mempool per ethernet device, the size of each pool
+       is equal to `pool_sz`.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--tx_first``
+
+       Transmit given number of packets across all the ethernet device that
+       are enabled in the test.
+       Only applicable for `pipeline_atq` and `pipeline_queue` tests.
+
+* ``--tx_pkt_sz``
+
+       Packet size to use for `--tx_first`.
        Only applicable for `pipeline_atq` and `pipeline_queue` tests.
 
 
@@ -207,7 +264,7 @@ to the ordered queue. The worker receives the events from ordered queue and
 forwards to atomic queue. Since the events from an ordered queue can be
 processed in parallel on the different workers, the ingress order of events
 might have changed on the downstream atomic queue enqueue. On enqueue to the
-atomic queue, the eventdev PMD driver reorders the event to the original
+atomic queue, the eventdev PMD reorders the event to the original
 ingress order(i.e producer ingress order).
 
 When the event is dequeued from the atomic queue by the worker, this test
@@ -348,8 +405,9 @@ The user can choose the number of workers, the number of producers and number of
 stages through the ``--wlcores``, ``--plcores`` and the ``--stlist`` application
 command line arguments respectively.
 
-The producer(s) injects the events to eventdev based the first stage sched type
-list requested by the user through ``--stlist`` the command line argument.
+The producer(s) injects the events to eventdev based on the first stage sched type
+list requested by the user through ``--stlist`` command line argument. It can
+inject a burst of events using ``--prod_enq_burst_sz`` command line argument.
 
 Based on the number of stages to process(selected through ``--stlist``),
 The application forwards the event to next upstream queue and terminates when it
@@ -387,12 +445,15 @@ Supported application command line options are following::
         --prod_type_ethdev
         --prod_type_timerdev_burst
         --prod_type_timerdev
+        --prod_type_cryptodev
+        --prod_enq_burst_sz
         --timer_tick_nsec
         --max_tmo_nsec
         --expiry_nsec
         --nb_timers
         --nb_timer_adptrs
         --deq_tmo_nsec
+        --crypto_adptr_mode
 
 Example
 ^^^^^^^
@@ -403,6 +464,14 @@ Example command to run perf queue test:
 
    sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x1 --vdev=event_sw0 -- \
         --test=perf_queue --plcores=2 --wlcore=3 --stlist=p --nb_pkts=0
+
+Example command to run perf queue test with producer enqueuing a burst of events:
+
+.. code-block:: console
+
+   sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x1 --vdev=event_sw0 -- \
+        --test=perf_queue --plcores=2 --wlcore=3 --stlist=p --nb_pkts=0 \
+        --prod_enq_burst_sz=32
 
 Example command to run perf queue test with ethernet ports:
 
@@ -487,12 +556,14 @@ Supported application command line options are following::
         --prod_type_ethdev
         --prod_type_timerdev_burst
         --prod_type_timerdev
+        --prod_type_cryptodev
         --timer_tick_nsec
         --max_tmo_nsec
         --expiry_nsec
         --nb_timers
         --nb_timer_adptrs
         --deq_tmo_nsec
+        --crypto_adptr_mode
 
 Example
 ^^^^^^^
@@ -607,6 +678,13 @@ Supported application command line options are following::
         --worker_deq_depth
         --prod_type_ethdev
         --deq_tmo_nsec
+        --nb_eth_queues
+        --enable_vector
+        --vector_size
+        --vector_tmo_ns
+        --per_port_pool
+        --tx_first
+        --tx_pkt_sz
 
 
 .. Note::
@@ -623,6 +701,13 @@ Example command to run pipeline queue test:
     sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x8 --vdev=event_sw0 -- \
         --test=pipeline_queue --wlcore=1 --prod_type_ethdev --stlist=a
 
+Example command to run pipeline atq test with vector events:
+
+.. code-block:: console
+
+    sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x8 --vdev=event_sw0 -- \
+        --test=pipeline_queue --wlcore=1 --prod_type_ethdev --stlist=a \
+        --enable_vector  --vector_size 512
 
 PIPELINE_ATQ Test
 ~~~~~~~~~~~~~~~~~~~
@@ -699,6 +784,13 @@ Supported application command line options are following::
         --worker_deq_depth
         --prod_type_ethdev
         --deq_tmo_nsec
+        --nb_eth_queues
+        --enable_vector
+        --vector_size
+        --vector_tmo_ns
+        --per_port_pool
+        --tx_first
+        --tx_pkt_sz
 
 
 .. Note::
@@ -708,9 +800,17 @@ Supported application command line options are following::
 Example
 ^^^^^^^
 
-Example command to run pipeline queue test:
+Example command to run pipeline atq test:
 
 .. code-block:: console
 
     sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x8 --vdev=event_sw0 -- \
         --test=pipeline_atq --wlcore=1 --prod_type_ethdev --stlist=a
+
+Example command to run pipeline atq test with vector events:
+
+.. code-block:: console
+
+    sudo <build_dir>/app/dpdk-test-eventdev -c 0xf -s 0x8 --vdev=event_sw0 -- \
+        --test=pipeline_atq --wlcore=1 --prod_type_ethdev --stlist=a \
+        --enable_vector  --vector_size 512

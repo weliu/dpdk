@@ -2,11 +2,14 @@
 # Copyright 2018-2019 Cisco Systems, Inc.  All rights reserved.
 
 if not is_linux
-	build = false
-	reason = 'only supported on Linux'
+    build = false
+    reason = 'only supported on Linux'
 endif
 
-sources = files('rte_eth_memif.c',
-		'memif_socket.c')
+sources = files(
+        'memif_socket.c',
+        'rte_eth_memif.c',
+)
 
 deps += ['hash']
+pmd_supports_disable_iova_as_pa = true

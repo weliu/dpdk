@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_ETHDEV_H_
@@ -19,7 +20,7 @@
 #include <rte_ethdev_core.h>
 #include <rte_hash.h>
 #include <rte_hash_crc.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_tm_driver.h>
 
 /* need update link, bit flag */
@@ -35,7 +36,6 @@
  * FreeBSD driver.
  */
 #define TXGBE_VFTA_SIZE 128
-#define TXGBE_VLAN_TAG_SIZE 4
 #define TXGBE_HKEY_MAX_INDEX 10
 /*Default value of Max Rx Queue*/
 #define TXGBE_MAX_RX_QUEUE_NUM	128
@@ -54,16 +54,20 @@
 #define TXGBE_5TUPLE_MAX_PRI            7
 #define TXGBE_5TUPLE_MIN_PRI            1
 
+
+/* The overhead from MTU to max frame size. */
+#define TXGBE_ETH_OVERHEAD (RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN)
+
 #define TXGBE_RSS_OFFLOAD_ALL ( \
-	ETH_RSS_IPV4 | \
-	ETH_RSS_NONFRAG_IPV4_TCP | \
-	ETH_RSS_NONFRAG_IPV4_UDP | \
-	ETH_RSS_IPV6 | \
-	ETH_RSS_NONFRAG_IPV6_TCP | \
-	ETH_RSS_NONFRAG_IPV6_UDP | \
-	ETH_RSS_IPV6_EX | \
-	ETH_RSS_IPV6_TCP_EX | \
-	ETH_RSS_IPV6_UDP_EX)
+	RTE_ETH_RSS_IPV4 | \
+	RTE_ETH_RSS_NONFRAG_IPV4_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV4_UDP | \
+	RTE_ETH_RSS_IPV6 | \
+	RTE_ETH_RSS_NONFRAG_IPV6_TCP | \
+	RTE_ETH_RSS_NONFRAG_IPV6_UDP | \
+	RTE_ETH_RSS_IPV6_EX | \
+	RTE_ETH_RSS_IPV6_TCP_EX | \
+	RTE_ETH_RSS_IPV6_UDP_EX)
 
 #define TXGBE_MISC_VEC_ID               RTE_INTR_VEC_ZERO_OFFSET
 #define TXGBE_RX_VEC_START              RTE_INTR_VEC_RXTX_OFFSET
@@ -170,13 +174,6 @@ struct txgbe_uta_info {
 	uint8_t  uc_filter_type;
 	uint16_t uta_in_use;
 	uint32_t uta_shadow[TXGBE_MAX_UTA];
-};
-
-#define TXGBE_MAX_MIRROR_RULES 4  /* Maximum nb. of mirror rules. */
-
-struct txgbe_mirror_info {
-	struct rte_eth_mirror_conf mr_conf[TXGBE_MAX_MIRROR_RULES];
-	/* store PF mirror rules configuration */
 };
 
 struct txgbe_vf_info {
@@ -349,13 +346,13 @@ struct txgbe_tm_conf {
 struct txgbe_adapter {
 	struct txgbe_hw             hw;
 	struct txgbe_hw_stats       stats;
+	struct rte_eth_fdir_conf    fdir_conf;
 	struct txgbe_hw_fdir_info   fdir;
 	struct txgbe_interrupt      intr;
 	struct txgbe_stat_mappings  stat_mappings;
 	struct txgbe_vfta           shadow_vfta;
 	struct txgbe_hwstrip        hwstrip;
 	struct txgbe_dcb_config     dcb_config;
-	struct txgbe_mirror_info    mr_data;
 	struct txgbe_vf_info        *vfdata;
 	struct txgbe_uta_info       uta_info;
 	struct txgbe_filter_info    filter;
@@ -376,6 +373,8 @@ struct txgbe_adapter {
 
 #define TXGBE_DEV_ADAPTER(dev) \
 	((struct txgbe_adapter *)(dev)->data->dev_private)
+
+#define TXGBE_DEV_FDIR_CONF(dev)	(&TXGBE_DEV_ADAPTER(dev)->fdir_conf)
 
 #define TXGBE_DEV_HW(dev) \
 	(&((struct txgbe_adapter *)(dev)->data->dev_private)->hw)
@@ -432,9 +431,9 @@ void txgbe_dev_clear_queues(struct rte_eth_dev *dev);
 
 void txgbe_dev_free_queues(struct rte_eth_dev *dev);
 
-void txgbe_dev_rx_queue_release(void *rxq);
+void txgbe_dev_rx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
-void txgbe_dev_tx_queue_release(void *txq);
+void txgbe_dev_tx_queue_release(struct rte_eth_dev *dev, uint16_t qid);
 
 int  txgbe_dev_rx_queue_setup(struct rte_eth_dev *dev, uint16_t rx_queue_id,
 		uint16_t nb_rx_desc, unsigned int socket_id,
@@ -445,8 +444,7 @@ int  txgbe_dev_tx_queue_setup(struct rte_eth_dev *dev, uint16_t tx_queue_id,
 		uint16_t nb_tx_desc, unsigned int socket_id,
 		const struct rte_eth_txconf *tx_conf);
 
-uint32_t txgbe_dev_rx_queue_count(struct rte_eth_dev *dev,
-		uint16_t rx_queue_id);
+uint32_t txgbe_dev_rx_queue_count(void *rx_queue);
 
 int txgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset);
 int txgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset);
@@ -588,7 +586,7 @@ int txgbe_tm_ops_get(struct rte_eth_dev *dev, void *ops);
 void txgbe_tm_conf_init(struct rte_eth_dev *dev);
 void txgbe_tm_conf_uninit(struct rte_eth_dev *dev);
 int txgbe_set_queue_rate_limit(struct rte_eth_dev *dev, uint16_t queue_idx,
-			       uint16_t tx_rate);
+			       uint32_t tx_rate);
 int txgbe_rss_conf_init(struct txgbe_rte_flow_rss_conf *out,
 			const struct rte_flow_action_rss *in);
 int txgbe_action_rss_same(const struct rte_flow_action_rss *comp,

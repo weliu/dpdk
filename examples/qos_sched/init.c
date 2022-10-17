@@ -3,6 +3,7 @@
  */
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <memory.h>
 
 #include <rte_log.h>
@@ -56,12 +57,8 @@ int mp_size = NB_MBUF;
 struct flow_conf qos_conf[MAX_DATA_STREAMS];
 
 static struct rte_eth_conf port_conf = {
-	.rxmode = {
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		.split_hdr_size = 0,
-	},
 	.txmode = {
-		.mq_mode = ETH_DCB_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -106,9 +103,9 @@ app_init_port(uint16_t portid, struct rte_mempool *mp)
 			"Error during getting device (port %u) info: %s\n",
 			portid, strerror(-ret));
 
-	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_MBUF_FAST_FREE)
+	if (dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE)
 		local_port_conf.txmode.offloads |=
-			DEV_TX_OFFLOAD_MBUF_FAST_FREE;
+			RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
 	ret = rte_eth_dev_configure(portid, 1, 1, &local_port_conf);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE,
@@ -184,9 +181,7 @@ static struct rte_sched_pipe_params pipe_profiles[MAX_SCHED_PIPE_PROFILES] = {
 		.tc_rate = {305175, 305175, 305175, 305175, 305175, 305175,
 			305175, 305175, 305175, 305175, 305175, 305175, 305175},
 		.tc_period = 40,
-#ifdef RTE_SCHED_SUBPORT_TC_OV
 		.tc_ov_weight = 1,
-#endif
 
 		.wrr_weights = {1, 1, 1, 1},
 	},
@@ -212,74 +207,7 @@ struct rte_sched_subport_params subport_params[MAX_SCHED_SUBPORTS] = {
 		.n_pipe_profiles = sizeof(pipe_profiles) /
 			sizeof(struct rte_sched_pipe_params),
 		.n_max_pipe_profiles = MAX_SCHED_PIPE_PROFILES,
-#ifdef RTE_SCHED_RED
-	.red_params = {
-		/* Traffic Class 0 Colors Green / Yellow / Red */
-		[0][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[0][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[0][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 1 - Colors Green / Yellow / Red */
-		[1][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[1][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[1][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 2 - Colors Green / Yellow / Red */
-		[2][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[2][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[2][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 3 - Colors Green / Yellow / Red */
-		[3][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[3][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[3][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 4 - Colors Green / Yellow / Red */
-		[4][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[4][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[4][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 5 - Colors Green / Yellow / Red */
-		[5][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[5][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[5][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 6 - Colors Green / Yellow / Red */
-		[6][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[6][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[6][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 7 - Colors Green / Yellow / Red */
-		[7][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[7][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[7][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 8 - Colors Green / Yellow / Red */
-		[8][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[8][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[8][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 9 - Colors Green / Yellow / Red */
-		[9][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[9][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[9][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 10 - Colors Green / Yellow / Red */
-		[10][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[10][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[10][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 11 - Colors Green / Yellow / Red */
-		[11][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[11][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[11][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-
-		/* Traffic Class 12 - Colors Green / Yellow / Red */
-		[12][0] = {.min_th = 48, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[12][1] = {.min_th = 40, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-		[12][2] = {.min_th = 32, .max_th = 64, .maxp_inv = 10, .wq_log2 = 9},
-	},
-#endif /* RTE_SCHED_RED */
+		.cman_params = NULL,
 	},
 };
 

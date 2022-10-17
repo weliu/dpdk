@@ -199,7 +199,7 @@ Each port consists of a primary VF and n secondary VF(s). Each VF provides 8 Tx/
 When a given port is configured to use more than 8 queues, it requires one (or more) secondary VF.
 Each secondary VF adds 8 additional queues to the queue set.
 
-During PMD driver initialization, the primary VF's are enumerated by checking the
+During PMD initialization, the primary VF's are enumerated by checking the
 specific flag (see sqs message in DPDK boot log - sqs indicates secondary queue set).
 They are at the beginning of VF list (the remain ones are secondary VF's).
 
@@ -371,7 +371,7 @@ Module params
 skip_data_bytes
 ~~~~~~~~~~~~~~~
 This feature is used to create a hole between HEADROOM and actual data. Size of hole is specified
-in bytes as module param("skip_data_bytes") to pmd.
+in bytes as module param("skip_data_bytes") to PMD.
 This scheme is useful when application would like to insert vlan header without disturbing HEADROOM.
 
 Example:
@@ -392,7 +392,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The ThunderX SoC family NICs support a maximum of a 9K jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 9200, frames
 up to 9200 bytes can still reach the host interface.
 

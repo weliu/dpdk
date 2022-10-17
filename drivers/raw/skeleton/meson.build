@@ -2,5 +2,8 @@
 # Copyright 2018 NXP
 
 deps += ['rawdev', 'kvargs', 'mbuf', 'bus_vdev']
-sources = files('skeleton_rawdev.c',
-               'skeleton_rawdev_test.c')
+sources = files(
+        'skeleton_rawdev.c',
+        'skeleton_rawdev_test.c',
+)
+pmd_supports_disable_iova_as_pa = true

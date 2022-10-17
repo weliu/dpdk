@@ -1,6 +1,6 @@
 [binaries]
-c = 'aarch64-linux-gnu-gcc'
-cpp = 'aarch64-linux-gnu-cpp'
+c = ['ccache', 'aarch64-linux-gnu-gcc']
+cpp = ['ccache', 'aarch64-linux-gnu-g++']
 ar = 'aarch64-linux-gnu-ar'
 as = 'aarch64-linux-gnu-as'
 strip = 'aarch64-linux-gnu-strip'
@@ -14,8 +14,4 @@ cpu = 'armv8-a'
 endian = 'little'
 
 [properties]
-implementer_id = 'dpaa'
-part_number = '0xd08'
-max_lcores = 16
-max_numa_nodes = 1
-numa = false
+platform = 'dpaa'

@@ -63,8 +63,6 @@ vPMD. They are:
 
 *   Flow director
 
-*   Header split
-
 *   RX checksum offload
 
 Other features are supported using optional MACRO configuration. They include:
@@ -78,13 +76,9 @@ To enable via ``RX_OLFLAGS`` use ``RTE_LIBRTE_FM10K_RX_OLFLAGS_ENABLE=y``.
 To guarantee the constraint, the following capabilities in ``dev_conf.rxmode.offloads``
 will be checked:
 
-*   ``DEV_RX_OFFLOAD_VLAN_EXTEND``
+*   ``RTE_ETH_RX_OFFLOAD_VLAN_EXTEND``
 
-*   ``DEV_RX_OFFLOAD_CHECKSUM``
-
-*   ``DEV_RX_OFFLOAD_HEADER_SPLIT``
-
-*   ``fdir_conf->mode``
+*   ``RTE_ETH_RX_OFFLOAD_CHECKSUM``
 
 
 RX Burst Size
@@ -114,9 +108,9 @@ Switch manager
 ~~~~~~~~~~~~~~
 
 The Intel FM10000 family of NICs integrate a hardware switch and multiple host
-interfaces. The FM10000 PMD driver only manages host interfaces. For the
+interfaces. The FM10000 PMD only manages host interfaces. For the
 switch component another switch driver has to be loaded prior to the
-FM10000 PMD driver. The switch driver can be acquired from Intel support.
+FM10000 PMD. The switch driver can be acquired from Intel support.
 Only Testpoint is validated with DPDK, the latest version that has been
 validated with DPDK is 4.1.6.
 
@@ -141,7 +135,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The FM10000 family of NICS support a maximum of a 15K jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 15364, frames
 up to 15364 bytes can still reach the host interface.
 

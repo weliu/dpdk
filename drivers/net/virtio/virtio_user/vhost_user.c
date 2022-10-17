@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/un.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 
@@ -78,7 +79,6 @@ enum vhost_user_request {
 	VHOST_USER_SET_VRING_ENABLE = 18,
 	VHOST_USER_SET_STATUS = 39,
 	VHOST_USER_GET_STATUS = 40,
-	VHOST_USER_MAX
 };
 
 struct vhost_user_msg {
@@ -97,7 +97,6 @@ struct vhost_user_msg {
 		struct vhost_vring_addr addr;
 		struct vhost_memory memory;
 	} payload;
-	int fds[VHOST_MEMORY_MAX_NREGIONS];
 } __rte_packed;
 
 #define VHOST_USER_HDR_SIZE offsetof(struct vhost_user_msg, payload.u64)
@@ -167,7 +166,7 @@ vhost_user_read(int fd, struct vhost_user_msg *msg)
 	sz_payload = msg->size;
 
 	if ((size_t)sz_payload > sizeof(msg->payload)) {
-		PMD_DRV_LOG(ERR, "Payload size overflow, header says %d but max %zu\n",
+		PMD_DRV_LOG(ERR, "Payload size overflow, header says %d but max %zu",
 				sz_payload, sizeof(msg->payload));
 		return -1;
 	}
@@ -749,7 +748,7 @@ vhost_user_start_server(struct virtio_user_dev *dev, struct sockaddr_un *un)
 
 	ret = bind(fd, (struct sockaddr *)un, sizeof(*un));
 	if (ret < 0) {
-		PMD_DRV_LOG(ERR, "failed to bind to %s: %s; remove it and try again\n",
+		PMD_DRV_LOG(ERR, "failed to bind to %s: %s; remove it and try again",
 			    dev->path, strerror(errno));
 		return -1;
 	}
@@ -822,7 +821,7 @@ vhost_user_setup(struct virtio_user_dev *dev)
 
 	data = malloc(sizeof(*data));
 	if (!data) {
-		PMD_DRV_LOG(ERR, "(%s) Failed to allocate Vhost-user data\n", dev->path);
+		PMD_DRV_LOG(ERR, "(%s) Failed to allocate Vhost-user data", dev->path);
 		return -1;
 	}
 
@@ -840,8 +839,10 @@ vhost_user_setup(struct virtio_user_dev *dev)
 	}
 
 	flag = fcntl(fd, F_GETFD);
-	if (fcntl(fd, F_SETFD, flag | FD_CLOEXEC) < 0)
-		PMD_DRV_LOG(WARNING, "fcntl failed, %s", strerror(errno));
+	if (flag == -1)
+		PMD_DRV_LOG(WARNING, "fcntl get fd failed, %s", strerror(errno));
+	else if (fcntl(fd, F_SETFD, flag | FD_CLOEXEC) < 0)
+		PMD_DRV_LOG(WARNING, "fcntl set fd failed, %s", strerror(errno));
 
 	memset(&un, 0, sizeof(un));
 	un.sun_family = AF_UNIX;
@@ -940,15 +941,8 @@ vhost_user_update_link_state(struct virtio_user_dev *dev)
 
 	if (data->vhostfd >= 0) {
 		int r;
-		int flags;
 
-		flags = fcntl(data->vhostfd, F_GETFL);
-		if (fcntl(data->vhostfd, F_SETFL, flags | O_NONBLOCK) == -1) {
-			PMD_DRV_LOG(ERR, "error setting O_NONBLOCK flag");
-			return -1;
-		}
-
-		r = recv(data->vhostfd, buf, 128, MSG_PEEK);
+		r = recv(data->vhostfd, buf, 128, MSG_PEEK | MSG_DONTWAIT);
 		if (r == 0 || (r < 0 && errno != EAGAIN)) {
 			dev->net_status &= (~VIRTIO_NET_S_LINK_UP);
 			PMD_DRV_LOG(ERR, "virtio-user port %u is down", dev->hw.port_id);
@@ -957,15 +951,11 @@ vhost_user_update_link_state(struct virtio_user_dev *dev)
 			 * of interrupt handling, callback cannot be
 			 * unregistered here, set an alarm to do it.
 			 */
-			rte_eal_alarm_set(1, virtio_user_dev_delayed_handler, (void *)dev);
+			rte_eal_alarm_set(1,
+				virtio_user_dev_delayed_disconnect_handler,
+				(void *)dev);
 		} else {
 			dev->net_status |= VIRTIO_NET_S_LINK_UP;
-		}
-
-		if (fcntl(data->vhostfd, F_SETFL,
-					flags & ~O_NONBLOCK) == -1) {
-			PMD_DRV_LOG(ERR, "error clearing O_NONBLOCK flag");
-			return -1;
 		}
 	} else if (dev->is_server) {
 		dev->net_status &= (~VIRTIO_NET_S_LINK_UP);

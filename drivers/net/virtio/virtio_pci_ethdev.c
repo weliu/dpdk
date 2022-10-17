@@ -11,12 +11,12 @@
 #include <ethdev_driver.h>
 #include <ethdev_pci.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_errno.h>
 
 #include <rte_memory.h>
 #include <rte_eal.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_kvargs.h>
 
 #include "virtio.h"
@@ -81,7 +81,7 @@ eth_virtio_pci_init(struct rte_eth_dev *eth_dev)
 		VTPCI_DEV(hw) = pci_dev;
 		ret = vtpci_init(RTE_ETH_DEV_TO_PCI(eth_dev), dev);
 		if (ret) {
-			PMD_INIT_LOG(ERR, "Failed to init PCI device\n");
+			PMD_INIT_LOG(ERR, "Failed to init PCI device");
 			return -1;
 		}
 	} else {
@@ -93,14 +93,14 @@ eth_virtio_pci_init(struct rte_eth_dev *eth_dev)
 
 		ret = virtio_remap_pci(RTE_ETH_DEV_TO_PCI(eth_dev), dev);
 		if (ret < 0) {
-			PMD_INIT_LOG(ERR, "Failed to remap PCI device\n");
+			PMD_INIT_LOG(ERR, "Failed to remap PCI device");
 			return -1;
 		}
 	}
 
 	ret = eth_virtio_dev_init(eth_dev);
 	if (ret < 0) {
-		PMD_INIT_LOG(ERR, "Failed to init virtio device\n");
+		PMD_INIT_LOG(ERR, "Failed to init virtio device");
 		goto err_unmap;
 	}
 
@@ -122,10 +122,20 @@ static int
 eth_virtio_pci_uninit(struct rte_eth_dev *eth_dev)
 {
 	int ret;
+	struct virtio_pci_dev *dev;
+	struct virtio_hw *hw;
 	PMD_INIT_FUNC_TRACE();
 
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
+	if (rte_eal_process_type() == RTE_PROC_SECONDARY) {
+		dev = eth_dev->data->dev_private;
+		hw = &dev->hw;
+
+		if (dev->modern)
+			rte_pci_unmap_device(RTE_ETH_DEV_TO_PCI(eth_dev));
+		else
+			vtpci_legacy_ioport_unmap(hw);
 		return 0;
+	}
 
 	ret = virtio_dev_stop(eth_dev);
 	virtio_dev_close(eth_dev);

@@ -27,7 +27,7 @@ Line length is recommended to be not more than 80 characters, including comments
 .. note::
 
 	The above is recommendation, and not a hard limit.
-	However, it is expected that the recommendations should be followed in all but the rarest situations.
+	Generally, line lengths up to 100 characters are acceptable in the code.
 
 C Comment Style
 ---------------
@@ -55,7 +55,7 @@ License Header
 ~~~~~~~~~~~~~~
 
 Each file must begin with a special comment containing the
-`Software Package Data Exchange (SPDX) License Identfier <https://spdx.org/using-spdx-license-identifier>`_.
+`Software Package Data Exchange (SPDX) License Identifier <https://spdx.org/using-spdx-license-identifier>`_.
 
 Generally this is the BSD License, except for code granted special exceptions.
 The SPDX licences identifier is sufficient, a file should not contain
@@ -136,6 +136,30 @@ For example:
 Conditional Compilation
 ~~~~~~~~~~~~~~~~~~~~~~~
 
+.. note::
+
+   Conditional compilation should be used only when absolutely necessary,
+   as it increases the number of target binaries that need to be built and tested.
+   See below for details of some utility macros/defines available
+   to allow ifdefs/macros to be replaced by C conditional in some cases.
+
+Some high-level guidelines on the use of conditional compilation:
+
+* If code can compile on all platforms/systems,
+  but cannot run on some due to lack of support,
+  then regular C conditionals, as described in the next section,
+  should be used instead of conditional compilation.
+* If the code in question cannot compile on all systems,
+  but constitutes only a small fragment of a file,
+  then conditional compilation should be used, as described in this section.
+* If the code for conditional compilation implements an interface in an OS
+  or platform-specific way, then create a file for each OS or platform
+  and select the appropriate file using the Meson build system.
+  In most cases, these environment-specific files should be created inside the EAL library,
+  rather than having each library implement its own abstraction layer.
+
+Additional style guidance for the use of conditional compilation macros:
+
 * When code is conditionally compiled using ``#ifdef`` or ``#if``, a comment may be added following the matching
   ``#endif`` or ``#else`` to permit the reader to easily discern where conditionally compiled code regions end.
 * This comment should be used only for (subjectively) long regions, regions greater than 20 lines, or where a series of nested ``#ifdef``'s may be confusing to the reader.
@@ -165,9 +189,45 @@ Conditional Compilation
  /* Or here. */
  #endif /* !COMPAT_43 */
 
-.. note::
+Defines to Avoid Conditional Compilation
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
- Conditional compilation should be used only when absolutely necessary, as it increases the number of target binaries that need to be built and tested.
+In many cases in DPDK, one wants to run code based on
+the target platform, or runtime environment.
+While this can be done using the conditional compilation directives,
+e.g. ``#ifdef RTE_EXEC_ENV_LINUX``, present in DPDK for many releases,
+this can also be done in many cases using regular ``if`` statements
+and the following defines:
+
+* ``RTE_ENV_FREEBSD``, ``RTE_ENV_LINUX``, ``RTE_ENV_WINDOWS`` -
+  these define ids for each operating system environment.
+* ``RTE_EXEC_ENV`` - this defines the id of the current environment,
+  i.e. one of the items in list above.
+* ``RTE_EXEC_ENV_IS_FREEBSD``, ``RTE_EXEC_ENV_IS_LINUX``, ``RTE_EXEC_ENV_IS_WINDOWS`` -
+  0/1 values indicating if the current environment is that specified,
+  shortcuts for checking e.g. ``RTE_EXEC_ENV == RTE_ENV_WINDOWS``
+
+Examples of use:
+
+.. code-block:: c
+
+   /* report a unit tests as unsupported on Windows */
+   if (RTE_EXEC_ENV_IS_WINDOWS)
+       return TEST_SKIPPED;
+
+   /* set different default values depending on OS Environment */
+   switch (RTE_EXEC_ENV) {
+   case RTE_ENV_FREEBSD:
+       default = x;
+       break;
+   case RTE_ENV_LINUX:
+       default = y;
+       break;
+   case RTE_ENV_WINDOWS:
+       default = z;
+       break;
+   }
+
 
 C Types
 -------
@@ -619,7 +679,7 @@ Return Value
 ~~~~~~~~~~~~
 
 * Functions which create objects, or allocate memory, should return pointer types, and NULL on error.
-  The error type should be indicated may setting the variable ``rte_errno`` appropriately.
+  The error type should be indicated by setting the variable ``rte_errno`` appropriately.
 * Functions which work on bursts of packets, such as RX-like or TX-like functions, should return the number of packets handled.
 * Other functions returning int should generally behave like system calls:
   returning 0 on success and -1 on error, setting ``rte_errno`` to indicate the specific type of error.
@@ -759,7 +819,7 @@ Examples:
  * The virtio network PMD in ``drivers/net/virtio`` uses ``pmd.net.virtio``
  * The eventdev software poll mode driver in ``drivers/event/sw`` uses ``pmd.event.sw``
  * The octeontx mempool driver in ``drivers/mempool/octeontx`` uses ``pmd.mempool.octeontx``
- * The DPDK hash library in ``lib/librte_hash`` uses ``lib.hash``
+ * The DPDK hash library in ``lib/hash`` uses ``lib.hash``
 
 Specializations
 ~~~~~~~~~~~~~~~
@@ -797,6 +857,14 @@ Integrating with the Build System
 ---------------------------------
 
 DPDK is built using the tools ``meson`` and ``ninja``.
+
+.. note::
+
+   In order to catch possible issues as soon as possible,
+   it is recommended that developers build DPDK in "developer mode" to enable additional checks.
+   By default, this mode is enabled if the build is being done from a git checkout,
+   but the mode can be manually enabled/disabled using the
+   ``developer_mode`` meson configuration option.
 
 Therefore all new component additions should include a ``meson.build`` file,
 and should be added to the component lists in the ``meson.build`` files in the
@@ -918,7 +986,7 @@ name
 	If a library's .so or .a file differs from that given in the directory
 	name, the name should be specified using this variable. In practice,
 	since the convention is that for a library called ``librte_xyz.so``, the
-	sources are stored in a directory ``lib/librte_xyz``, this value should
+	sources are stored in a directory ``lib/xyz``, this value should
 	never be needed for new libraries.
 
 .. note::
@@ -1004,3 +1072,59 @@ headers
 
 version
 	As above
+
+
+Meson Coding Style
+------------------
+
+The following guidelines apply to the build system code in meson.build files in DPDK.
+
+* Indentation should be using 4 spaces, no hard tabs.
+
+* Line continuations should be doubly-indented to ensure visible difference from normal indentation.
+  Any line continuations beyond the first may be singly indented to avoid large amounts of indentation.
+
+* Where a line is split in the middle of a statement, e.g. a multiline `if` statement,
+  brackets should be used in preference to escaping the line break.
+
+Example::
+
+    if (condition1 and condition2            # line breaks inside () need no escaping
+            and condition3 and condition4)
+        x = y
+    endif
+
+* Lists of files or components must be alphabetical unless doing so would cause errors.
+
+* Two formats are supported for lists of files or list of components:
+
+   * For a small number of list entries, generally 3 or fewer, all elements may be put on a single line.
+     In this case, the opening and closing braces of the list must be on the same line as the list items.
+     No trailing comma is put on the final list entry.
+   * For lists with more than 3 items,
+     it is recommended that the lists be put in the files with a *single* entry per line.
+     In this case, the opening brace, or ``files`` function call must be on a line on its own,
+     and the closing brace must similarly be on a line on its own at the end.
+     To help with readability of nested sublists, the closing brace should be dedented to appear
+     at the same level as the opening braced statement.
+     The final list entry must have a trailing comma,
+     so that adding a new entry to the list never modifies any other line in the list.
+
+Examples::
+
+    sources = files('file1.c', 'file2.c')
+
+    subdirs = ['dir1', 'dir2']
+
+    headers = files(
+            'header1.c',
+            'header2.c',
+            'header3.c',   # always include trailing comma
+    )                      # closing brace at indent level of opening brace
+
+    components = [
+            'comp1',
+            'comp2',
+            ...
+            'compN',
+    ]

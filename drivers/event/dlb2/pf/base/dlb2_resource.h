@@ -6,13 +6,12 @@
 #define __DLB2_RESOURCE_H
 
 #include "dlb2_user.h"
-
-#include "dlb2_hw_types.h"
 #include "dlb2_osdep_types.h"
 
 /**
  * dlb2_resource_init() - initialize the device
  * @hw: pointer to struct dlb2_hw.
+ * @ver: device version.
  *
  * This function initializes the device's software state (pointed to by the hw
  * argument) and programs global scheduling QoS registers. This function should
@@ -24,7 +23,30 @@
  * Return:
  * Returns 0 upon success, <0 otherwise.
  */
-int dlb2_resource_init(struct dlb2_hw *hw);
+int dlb2_resource_init(struct dlb2_hw *hw, enum dlb2_hw_ver ver, const void *probe_args);
+
+/**
+ * dlb2_resource_probe() - probe hw resources
+ * @hw: pointer to struct dlb2_hw.
+ *
+ * This function probes hw resources for best port allocation to producer
+ * cores.
+ *
+ * Return:
+ * Returns 0 upon success, <0 otherwise.
+ */
+int dlb2_resource_probe(struct dlb2_hw *hw, const void *probe_args);
+
+
+/**
+ * dlb2_clr_pmcsr_disable() - power on bulk of DLB 2.0 logic
+ * @hw: dlb2_hw handle for a particular device.
+ * @ver: device version.
+ *
+ * Clearing the PMCSR must be done at initialization to make the device fully
+ * operational.
+ */
+void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw, enum dlb2_hw_ver ver);
 
 /**
  * dlb2_resource_free() - free device state memory
@@ -819,8 +841,8 @@ int dlb2_get_group_sequence_number_occupancy(struct dlb2_hw *hw,
  * ordered queue is configured.
  */
 int dlb2_set_group_sequence_numbers(struct dlb2_hw *hw,
-				    unsigned int group_id,
-				    unsigned long val);
+				    u32 group_id,
+				    u32 val);
 
 /**
  * dlb2_reset_domain() - reset a scheduling domain
@@ -1486,15 +1508,6 @@ int dlb2_notify_vf(struct dlb2_hw *hw,
 int dlb2_vdev_in_use(struct dlb2_hw *hw, unsigned int id);
 
 /**
- * dlb2_clr_pmcsr_disable() - power on bulk of DLB 2.0 logic
- * @hw: dlb2_hw handle for a particular device.
- *
- * Clearing the PMCSR must be done at initialization to make the device fully
- * operational.
- */
-void dlb2_clr_pmcsr_disable(struct dlb2_hw *hw);
-
-/**
  * dlb2_hw_get_ldb_queue_depth() - returns the depth of a load-balanced queue
  * @hw: dlb2_hw handle for a particular device.
  * @domain_id: domain ID.
@@ -1909,5 +1922,38 @@ int dlb2_hw_dir_cq_interrupt_enabled(struct dlb2_hw *hw, int port_id);
 void dlb2_hw_dir_cq_interrupt_set_mode(struct dlb2_hw *hw,
 				       int port_id,
 				       int mode);
+
+/**
+ * dlb2_hw_enable_cq_weight() - Enable QE-weight based scheduling on an LDB port.
+ * @hw: dlb2_hw handle for a particular device.
+ * @domain_id: domain ID.
+ * @args: CQ weight enablement arguments.
+ * @resp: response structure.
+ * @vdev_request: indicates whether this request came from a vdev.
+ * @vdev_id: If vdev_request is true, this contains the vdev's ID.
+ *
+ * This function enables QE-weight based scheduling on a load-balanced port's
+ * CQ and configures the CQ's weight limit.
+ *
+ * This must be called after creating the port but before starting the
+ * domain.
+ *
+ * Return:
+ * Returns 0 upon success, < 0 otherwise. If an error occurs, resp->status is
+ * assigned a detailed error code from enum dlb2_error. If successful, resp->id
+ * contains the queue ID.
+ *
+ * Errors:
+ * EINVAL - The domain or port is not configured, the domainhas already been
+ *          started, the requested limit exceeds the port's CQ depth, or this
+ *          feature is unavailable on the device.
+ * EFAULT - Internal error (resp->status not set).
+ */
+int dlb2_hw_enable_cq_weight(struct dlb2_hw *hw,
+			     u32 domain_id,
+			     struct dlb2_enable_cq_weight_args *args,
+			     struct dlb2_cmd_response *resp,
+			     bool vdev_request,
+			     unsigned int vdev_id);
 
 #endif /* __DLB2_RESOURCE_H */

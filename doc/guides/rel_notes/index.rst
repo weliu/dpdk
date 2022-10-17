@@ -8,6 +8,11 @@ Release Notes
     :maxdepth: 1
     :numbered:
 
+    release_22_11
+    release_22_07
+    release_22_03
+    release_21_11
+    release_21_08
     release_21_05
     release_21_02
     release_20_11

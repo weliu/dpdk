@@ -7,12 +7,14 @@
 
 #include <errno.h>  /* errno */
 #include <limits.h> /* PATH_MAX */
+#ifndef RTE_EXEC_ENV_WINDOWS
 #include <libgen.h> /* basename et al */
+#include <sys/wait.h>
+#endif
 #include <stdlib.h> /* NULL */
 #include <string.h> /* strerror */
 #include <unistd.h> /* readlink */
 #include <dirent.h>
-#include <sys/wait.h>
 
 #include <rte_string_fns.h> /* strlcpy */
 
@@ -48,6 +50,7 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 #ifdef RTE_LIB_PDUMP
 #ifdef RTE_NET_RING
 	pthread_t thread;
+	int rc;
 #endif
 #endif
 
@@ -89,6 +92,11 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 			}
 
 			while ((dirent = readdir(dir)) != NULL) {
+
+				if (strcmp(dirent->d_name, ".") == 0 ||
+					strcmp(dirent->d_name, "..") == 0)
+					continue;
+
 				errno = 0;
 				fd = strtol(dirent->d_name, &endptr, 10);
 				if (errno != 0 || endptr[0] != '\0') {
@@ -109,6 +117,7 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 		for (i = 0; i < num; i++)
 			printf("'%s' ", argv_cpy[i]);
 		printf("\n");
+		fflush(stdout);
 
 		/* set the environment variable */
 		if (setenv(RECURSIVE_ENV_VAR, env_value, 1) != 0)
@@ -126,8 +135,13 @@ process_dup(const char *const argv[], int numargs, const char *env_value)
 	/* parent process does a wait */
 #ifdef RTE_LIB_PDUMP
 #ifdef RTE_NET_RING
-	if ((strcmp(env_value, "run_pdump_server_tests") == 0))
-		pthread_create(&thread, NULL, &send_pkts, NULL);
+	if ((strcmp(env_value, "run_pdump_server_tests") == 0)) {
+		rc = pthread_create(&thread, NULL, &send_pkts, NULL);
+		if (rc != 0) {
+			rte_panic("Cannot start send pkts thread: %s\n",
+				  strerror(rc));
+		}
+	}
 #endif
 #endif
 

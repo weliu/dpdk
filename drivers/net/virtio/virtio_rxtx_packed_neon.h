@@ -97,12 +97,12 @@ virtqueue_enqueue_batch_packed_vec(struct virtnet_tx *txvq,
 
 	uint64x2x2_t desc[PACKED_BATCH_SIZE / 2];
 	uint64x2_t base_addr0 = {
-		tx_pkts[0]->buf_iova + tx_pkts[0]->data_off,
-		tx_pkts[1]->buf_iova + tx_pkts[1]->data_off
+		VIRTIO_MBUF_ADDR(tx_pkts[0], vq) + tx_pkts[0]->data_off,
+		VIRTIO_MBUF_ADDR(tx_pkts[1], vq) + tx_pkts[1]->data_off
 	};
 	uint64x2_t base_addr1 = {
-		tx_pkts[2]->buf_iova + tx_pkts[2]->data_off,
-		tx_pkts[3]->buf_iova + tx_pkts[3]->data_off
+		VIRTIO_MBUF_ADDR(tx_pkts[2], vq) + tx_pkts[2]->data_off,
+		VIRTIO_MBUF_ADDR(tx_pkts[3], vq) + tx_pkts[3]->data_off
 	};
 
 	desc[0].val[0] = base_addr0;
@@ -134,7 +134,7 @@ virtqueue_enqueue_batch_packed_vec(struct virtnet_tx *txvq,
 		virtio_for_each_try_unroll(i, 0, PACKED_BATCH_SIZE) {
 			hdr = rte_pktmbuf_mtod_offset(tx_pkts[i],
 					struct virtio_net_hdr *, -head_size);
-			virtqueue_xmit_offload(hdr, tx_pkts[i], true);
+			virtqueue_xmit_offload(hdr, tx_pkts[i]);
 		}
 	}
 

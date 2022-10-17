@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
  */
 
 #include <rte_mbuf.h>
@@ -102,7 +102,7 @@ static u32 txgbe_ptype_lookup[TXGBE_PTID_MAX] __rte_cache_aligned = {
 	TPTE(0x8C, ETHER, IPV4, NONE, IP, NONE, IPV6, TCP),
 	TPTE(0x8D, ETHER, IPV4, NONE, IP, NONE, IPV6, SCTP),
 	/* IPv4 -> GRE/Teredo/VXLAN -> NONE/IPv4/IPv6 */
-	TPTE(0x90, ETHER, IPV4, NONE, GRENAT, NONE, NONE,  NONE),
+	TPTE(0x90, ETHER, IPV4, NONE, GRENAT, NONE, NONE, NONE),
 	TPTE(0x91, ETHER, IPV4, NONE, GRENAT, NONE, IPV4, FRAG),
 	TPTE(0x92, ETHER, IPV4, NONE, GRENAT, NONE, IPV4, NONFRAG),
 	TPTE(0x93, ETHER, IPV4, NONE, GRENAT, NONE, IPV4, UDP),
@@ -672,4 +672,3 @@ txgbe_ptype_table_tn[TXGBE_PTID_MAX] __rte_cache_aligned = {
 		RTE_PTYPE_TUNNEL_VXLAN | RTE_PTYPE_INNER_L2_ETHER |
 		RTE_PTYPE_INNER_L3_IPV4_EXT | RTE_PTYPE_INNER_L4_UDP,
 };
-

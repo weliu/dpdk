@@ -83,6 +83,12 @@ can utilize that stack to handle the network protocols. Plus you would be able
 to address the interface using an IP address assigned to the internal
 interface.
 
+Normally, when the DPDK application exits,
+the TAP device is marked down and is removed.
+But this behaviour can be overridden by the use of the persist flag, example::
+
+  --vdev=net_tap0,iface=tap0,persist ...
+
 The TUN PMD allows user to create a TUN device on host. The PMD allows user
 to transmit and receive packets via DPDK API calls with L3 header and payload.
 The devices in host can be accessed via ``ifconfig`` or ``ip`` command. TUN
@@ -275,7 +281,7 @@ An example utility for eBPF instruction generation in the format of C arrays wil
 be added in next releases
 
 TAP reports on supported RSS functions as part of dev_infos_get callback:
-``ETH_RSS_IP``, ``ETH_RSS_UDP`` and ``ETH_RSS_TCP``.
+``RTE_ETH_RSS_IP``, ``RTE_ETH_RSS_UDP`` and ``RTE_ETH_RSS_TCP``.
 **Known limitation:** TAP supports all of the above hash functions together
 and not in partial combinations.
 
@@ -298,3 +304,8 @@ Systems supporting flow API
 | Azure Ubuntu 16.04,| No limitation         |
 | kernel 4.13        |                       |
 +--------------------+-----------------------+
+
+Limitations
+-----------
+
+* Rx/Tx must have the same number of queues.

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  *
- *   Copyright 2016,2018-2019 NXP
+ *   Copyright 2016,2018-2021 NXP
  *
  */
 
@@ -9,14 +9,14 @@
 #include <stdbool.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
+#include <bus_driver.h>
 #include <rte_malloc.h>
 #include <rte_devargs.h>
 #include <rte_memcpy.h>
 #include <ethdev_driver.h>
 #include <rte_mbuf_dyn.h>
 
-#include <rte_fslmc.h>
+#include "private.h"
 #include <fslmc_vfio.h>
 #include "fslmc_logs.h"
 
@@ -45,8 +45,9 @@ cleanup_fslmc_device_list(void)
 	struct rte_dpaa2_device *dev;
 	struct rte_dpaa2_device *t_dev;
 
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, t_dev) {
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, t_dev) {
 		TAILQ_REMOVE(&rte_fslmc_bus.device_list, dev, next);
+		rte_intr_instance_free(dev->intr_handle);
 		free(dev);
 		dev = NULL;
 	}
@@ -82,7 +83,7 @@ insert_in_device_list(struct rte_dpaa2_device *newdev)
 	struct rte_dpaa2_device *dev = NULL;
 	struct rte_dpaa2_device *tdev = NULL;
 
-	TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, tdev) {
+	RTE_TAILQ_FOREACH_SAFE(dev, &rte_fslmc_bus.device_list, next, tdev) {
 		comp = compare_dpaa2_devname(newdev, dev);
 		if (comp < 0) {
 			TAILQ_INSERT_BEFORE(dev, newdev, next);
@@ -135,10 +136,6 @@ scan_one_fslmc_device(char *dev_name)
 	if (!dev_name)
 		return ret;
 
-	/* Ignore the Container name itself */
-	if (!strncmp("dprc", dev_name, 4))
-		return 0;
-
 	/* Creating a temporary copy to perform cut-parse over string */
 	dup_dev_name = strdup(dev_name);
 	if (!dup_dev_name) {
@@ -159,6 +156,16 @@ scan_one_fslmc_device(char *dev_name)
 	}
 
 	dev->device.bus = &rte_fslmc_bus.bus;
+	dev->device.numa_node = SOCKET_ID_ANY;
+
+	/* Allocate interrupt instance */
+	dev->intr_handle =
+		rte_intr_instance_alloc(RTE_INTR_INSTANCE_F_PRIVATE);
+	if (dev->intr_handle == NULL) {
+		DPAA2_BUS_ERR("Failed to allocate intr handle");
+		ret = -ENOMEM;
+		goto cleanup;
+	}
 
 	/* Parse the device name and ID */
 	t_ptr = strtok(dup_dev_name, ".");
@@ -187,6 +194,8 @@ scan_one_fslmc_device(char *dev_name)
 		dev->dev_type = DPAA2_MUX;
 	else if (!strncmp("dprtc", t_ptr, 5))
 		dev->dev_type = DPAA2_DPRTC;
+	else if (!strncmp("dprc", t_ptr, 4))
+		dev->dev_type = DPAA2_DPRC;
 	else
 		dev->dev_type = DPAA2_UNKNOWN;
 
@@ -213,15 +222,15 @@ scan_one_fslmc_device(char *dev_name)
 	insert_in_device_list(dev);
 
 	/* Don't need the duplicated device filesystem entry anymore */
-	if (dup_dev_name)
-		free(dup_dev_name);
+	free(dup_dev_name);
 
 	return 0;
 cleanup:
-	if (dup_dev_name)
-		free(dup_dev_name);
-	if (dev)
+	free(dup_dev_name);
+	if (dev) {
+		rte_intr_instance_free(dev->intr_handle);
 		free(dev);
+	}
 	return ret;
 }
 
@@ -303,7 +312,6 @@ static int
 rte_fslmc_scan(void)
 {
 	int ret;
-	int device_count = 0;
 	char fslmc_dirpath[PATH_MAX];
 	DIR *dir;
 	struct dirent *entry;
@@ -328,6 +336,13 @@ rte_fslmc_scan(void)
 		goto scan_fail;
 	}
 
+	/* Scan the DPRC container object */
+	ret = scan_one_fslmc_device(fslmc_container);
+	if (ret != 0) {
+		/* Error in parsing directory - exit gracefully */
+		goto scan_fail_cleanup;
+	}
+
 	while ((entry = readdir(dir)) != NULL) {
 		if (entry->d_name[0] == '.' || entry->d_type != DT_DIR)
 			continue;
@@ -337,7 +352,6 @@ rte_fslmc_scan(void)
 			/* Error in parsing directory - exit gracefully */
 			goto scan_fail_cleanup;
 		}
-		device_count += 1;
 	}
 
 	closedir(dir);
@@ -517,27 +531,19 @@ rte_fslmc_driver_register(struct rte_dpaa2_driver *driver)
 	RTE_VERIFY(driver);
 
 	TAILQ_INSERT_TAIL(&rte_fslmc_bus.driver_list, driver, next);
-	/* Update Bus references */
-	driver->fslmc_bus = &rte_fslmc_bus;
 }
 
 /*un-register a fslmc bus based dpaa2 driver */
 void
 rte_fslmc_driver_unregister(struct rte_dpaa2_driver *driver)
 {
-	struct rte_fslmc_bus *fslmc_bus;
-
-	fslmc_bus = driver->fslmc_bus;
-
-	/* Cleanup the PA->VA Translation table; From whereever this function
+	/* Cleanup the PA->VA Translation table; From wherever this function
 	 * is called from.
 	 */
 	if (rte_eal_iova_mode() == RTE_IOVA_PA)
 		dpaax_iova_table_depopulate();
 
-	TAILQ_REMOVE(&fslmc_bus->driver_list, driver, next);
-	/* Update Bus references */
-	driver->fslmc_bus = NULL;
+	TAILQ_REMOVE(&rte_fslmc_bus.driver_list, driver, next);
 }
 
 /*
@@ -666,4 +672,4 @@ struct rte_fslmc_bus rte_fslmc_bus = {
 };
 
 RTE_REGISTER_BUS(FSLMC_BUS_NAME, rte_fslmc_bus.bus);
-RTE_LOG_REGISTER(dpaa2_logtype_bus, bus.fslmc, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(dpaa2_logtype_bus, NOTICE);

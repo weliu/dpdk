@@ -20,97 +20,97 @@ const struct _qede_udp_tunn_types {
 	const char *string;
 } qede_tunn_types[] = {
 	{
-		ETH_TUNNEL_FILTER_OMAC,
+		RTE_ETH_TUNNEL_FILTER_OMAC,
 		ECORE_FILTER_MAC,
 		ECORE_TUNN_CLSS_MAC_VLAN,
 		"outer-mac"
 	},
 	{
-		ETH_TUNNEL_FILTER_TENID,
+		RTE_ETH_TUNNEL_FILTER_TENID,
 		ECORE_FILTER_VNI,
 		ECORE_TUNN_CLSS_MAC_VNI,
 		"vni"
 	},
 	{
-		ETH_TUNNEL_FILTER_IMAC,
+		RTE_ETH_TUNNEL_FILTER_IMAC,
 		ECORE_FILTER_INNER_MAC,
 		ECORE_TUNN_CLSS_INNER_MAC_VLAN,
 		"inner-mac"
 	},
 	{
-		ETH_TUNNEL_FILTER_IVLAN,
+		RTE_ETH_TUNNEL_FILTER_IVLAN,
 		ECORE_FILTER_INNER_VLAN,
 		ECORE_TUNN_CLSS_INNER_MAC_VLAN,
 		"inner-vlan"
 	},
 	{
-		ETH_TUNNEL_FILTER_OMAC | ETH_TUNNEL_FILTER_TENID,
+		RTE_ETH_TUNNEL_FILTER_OMAC | RTE_ETH_TUNNEL_FILTER_TENID,
 		ECORE_FILTER_MAC_VNI_PAIR,
 		ECORE_TUNN_CLSS_MAC_VNI,
 		"outer-mac and vni"
 	},
 	{
-		ETH_TUNNEL_FILTER_OMAC | ETH_TUNNEL_FILTER_IMAC,
+		RTE_ETH_TUNNEL_FILTER_OMAC | RTE_ETH_TUNNEL_FILTER_IMAC,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"outer-mac and inner-mac"
 	},
 	{
-		ETH_TUNNEL_FILTER_OMAC | ETH_TUNNEL_FILTER_IVLAN,
+		RTE_ETH_TUNNEL_FILTER_OMAC | RTE_ETH_TUNNEL_FILTER_IVLAN,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"outer-mac and inner-vlan"
 	},
 	{
-		ETH_TUNNEL_FILTER_TENID | ETH_TUNNEL_FILTER_IMAC,
+		RTE_ETH_TUNNEL_FILTER_TENID | RTE_ETH_TUNNEL_FILTER_IMAC,
 		ECORE_FILTER_INNER_MAC_VNI_PAIR,
 		ECORE_TUNN_CLSS_INNER_MAC_VNI,
 		"vni and inner-mac",
 	},
 	{
-		ETH_TUNNEL_FILTER_TENID | ETH_TUNNEL_FILTER_IVLAN,
+		RTE_ETH_TUNNEL_FILTER_TENID | RTE_ETH_TUNNEL_FILTER_IVLAN,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"vni and inner-vlan",
 	},
 	{
-		ETH_TUNNEL_FILTER_IMAC | ETH_TUNNEL_FILTER_IVLAN,
+		RTE_ETH_TUNNEL_FILTER_IMAC | RTE_ETH_TUNNEL_FILTER_IVLAN,
 		ECORE_FILTER_INNER_PAIR,
 		ECORE_TUNN_CLSS_INNER_MAC_VLAN,
 		"inner-mac and inner-vlan",
 	},
 	{
-		ETH_TUNNEL_FILTER_OIP,
+		RTE_ETH_TUNNEL_FILTER_OIP,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"outer-IP"
 	},
 	{
-		ETH_TUNNEL_FILTER_IIP,
+		RTE_ETH_TUNNEL_FILTER_IIP,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"inner-IP"
 	},
 	{
-		RTE_TUNNEL_FILTER_IMAC_IVLAN,
+		RTE_ETH_TUNNEL_FILTER_IMAC_IVLAN,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"IMAC_IVLAN"
 	},
 	{
-		RTE_TUNNEL_FILTER_IMAC_IVLAN_TENID,
+		RTE_ETH_TUNNEL_FILTER_IMAC_IVLAN_TENID,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"IMAC_IVLAN_TENID"
 	},
 	{
-		RTE_TUNNEL_FILTER_IMAC_TENID,
+		RTE_ETH_TUNNEL_FILTER_IMAC_TENID,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"IMAC_TENID"
 	},
 	{
-		RTE_TUNNEL_FILTER_OMAC_TENID_IMAC,
+		RTE_ETH_TUNNEL_FILTER_OMAC_TENID_IMAC,
 		ECORE_FILTER_UNUSED,
 		MAX_ECORE_TUNN_CLSS,
 		"OMAC_TENID_IMAC"
@@ -144,31 +144,9 @@ int qede_check_fdir_support(struct rte_eth_dev *eth_dev)
 {
 	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
-	struct rte_fdir_conf *fdir = &eth_dev->data->dev_conf.fdir_conf;
 
-	/* check FDIR modes */
-	switch (fdir->mode) {
-	case RTE_FDIR_MODE_NONE:
-		qdev->arfs_info.arfs.mode = ECORE_FILTER_CONFIG_MODE_DISABLE;
-		DP_INFO(edev, "flowdir is disabled\n");
-	break;
-	case RTE_FDIR_MODE_PERFECT:
-		if (ECORE_IS_CMT(edev)) {
-			DP_ERR(edev, "flowdir is not supported in 100G mode\n");
-			qdev->arfs_info.arfs.mode =
-				ECORE_FILTER_CONFIG_MODE_DISABLE;
-			return -ENOTSUP;
-		}
-		qdev->arfs_info.arfs.mode =
-				ECORE_FILTER_CONFIG_MODE_5_TUPLE;
-		DP_INFO(edev, "flowdir is enabled (5 Tuple mode)\n");
-	break;
-	case RTE_FDIR_MODE_PERFECT_TUNNEL:
-	case RTE_FDIR_MODE_SIGNATURE:
-	case RTE_FDIR_MODE_PERFECT_MAC_VLAN:
-		DP_ERR(edev, "Unsupported flowdir mode %d\n", fdir->mode);
-		return -ENOTSUP;
-	}
+	qdev->arfs_info.arfs.mode = ECORE_FILTER_CONFIG_MODE_DISABLE;
+	DP_INFO(edev, "flowdir is disabled\n");
 
 	return 0;
 }
@@ -258,9 +236,6 @@ qede_config_arfs_filter(struct rte_eth_dev *eth_dev,
 	if (add) {
 		if (qdev->arfs_info.arfs.mode ==
 			ECORE_FILTER_CONFIG_MODE_DISABLE) {
-			/* Force update */
-			eth_dev->data->dev_conf.fdir_conf.mode =
-						RTE_FDIR_MODE_PERFECT;
 			qdev->arfs_info.arfs.mode =
 					ECORE_FILTER_CONFIG_MODE_5_TUPLE;
 			DP_INFO(edev, "Force enable flowdir in perfect mode\n");
@@ -388,10 +363,8 @@ qede_arfs_construct_pkt(struct rte_eth_dev *eth_dev,
 		ip6->vtc_flow =
 			rte_cpu_to_be_32(QEDE_FDIR_IPV6_DEFAULT_VTC_FLOW);
 
-		rte_memcpy(&ip6->src_addr, arfs->tuple.src_ipv6,
-			   IPV6_ADDR_LEN);
-		rte_memcpy(&ip6->dst_addr, arfs->tuple.dst_ipv6,
-			   IPV6_ADDR_LEN);
+		memcpy(&ip6->src_addr, arfs->tuple.src_ipv6, IPV6_ADDR_LEN);
+		memcpy(&ip6->dst_addr, arfs->tuple.dst_ipv6, IPV6_ADDR_LEN);
 		len += sizeof(struct rte_ipv6_hdr);
 		params->ipv6 = true;
 
@@ -542,7 +515,7 @@ qede_udp_dst_port_del(struct rte_eth_dev *eth_dev,
 	memset(&tunn, 0, sizeof(tunn));
 
 	switch (tunnel_udp->prot_type) {
-	case RTE_TUNNEL_TYPE_VXLAN:
+	case RTE_ETH_TUNNEL_TYPE_VXLAN:
 		if (qdev->vxlan.udp_port != tunnel_udp->udp_port) {
 			DP_ERR(edev, "UDP port %u doesn't exist\n",
 				tunnel_udp->udp_port);
@@ -570,7 +543,7 @@ qede_udp_dst_port_del(struct rte_eth_dev *eth_dev,
 					ECORE_TUNN_CLSS_MAC_VLAN, false);
 
 		break;
-	case RTE_TUNNEL_TYPE_GENEVE:
+	case RTE_ETH_TUNNEL_TYPE_GENEVE:
 		if (qdev->geneve.udp_port != tunnel_udp->udp_port) {
 			DP_ERR(edev, "UDP port %u doesn't exist\n",
 				tunnel_udp->udp_port);
@@ -622,7 +595,7 @@ qede_udp_dst_port_add(struct rte_eth_dev *eth_dev,
 	memset(&tunn, 0, sizeof(tunn));
 
 	switch (tunnel_udp->prot_type) {
-	case RTE_TUNNEL_TYPE_VXLAN:
+	case RTE_ETH_TUNNEL_TYPE_VXLAN:
 		if (qdev->vxlan.udp_port == tunnel_udp->udp_port) {
 			DP_INFO(edev,
 				"UDP port %u for VXLAN was already configured\n",
@@ -659,7 +632,7 @@ qede_udp_dst_port_add(struct rte_eth_dev *eth_dev,
 
 		qdev->vxlan.udp_port = udp_port;
 		break;
-	case RTE_TUNNEL_TYPE_GENEVE:
+	case RTE_ETH_TUNNEL_TYPE_GENEVE:
 		if (qdev->geneve.udp_port == tunnel_udp->udp_port) {
 			DP_INFO(edev,
 				"UDP port %u for GENEVE was already configured\n",
@@ -821,12 +794,10 @@ qede_flow_parse_pattern(__rte_unused struct rte_eth_dev *dev,
 				const struct rte_flow_item_ipv6 *spec;
 
 				spec = pattern->spec;
-				rte_memcpy(flow->entry.tuple.src_ipv6,
-					   spec->hdr.src_addr,
-					   IPV6_ADDR_LEN);
-				rte_memcpy(flow->entry.tuple.dst_ipv6,
-					   spec->hdr.dst_addr,
-					   IPV6_ADDR_LEN);
+				memcpy(flow->entry.tuple.src_ipv6,
+				       spec->hdr.src_addr, IPV6_ADDR_LEN);
+				memcpy(flow->entry.tuple.dst_ipv6,
+				       spec->hdr.dst_addr, IPV6_ADDR_LEN);
 				flow->entry.tuple.eth_proto =
 					RTE_ETHER_TYPE_IPV6;
 			}

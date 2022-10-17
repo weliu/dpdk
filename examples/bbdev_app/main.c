@@ -18,7 +18,6 @@
 #include <getopt.h>
 #include <signal.h>
 
-#include <rte_atomic.h>
 #include <rte_common.h>
 #include <rte_eal.h>
 #include <rte_cycles.h>
@@ -50,8 +49,8 @@
 #define CRC_24B_LEN 3
 
 /* Configurable number of RX/TX ring descriptors */
-#define RTE_TEST_RX_DESC_DEFAULT 128
-#define RTE_TEST_TX_DESC_DEFAULT 512
+#define RX_DESC_DEFAULT 128
+#define TX_DESC_DEFAULT 512
 
 #define BBDEV_ASSERT(a) do { \
 	if (!(a)) { \
@@ -71,12 +70,10 @@ mbuf_input(struct rte_mbuf *mbuf)
 
 static const struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -167,7 +164,7 @@ static const struct app_config_params def_app_config = {
 	.num_dec_cores = 1,
 };
 
-static rte_atomic16_t global_exit_flag;
+static uint16_t global_exit_flag;
 
 /* display usage */
 static inline void
@@ -279,20 +276,15 @@ static void
 signal_handler(int signum)
 {
 	printf("\nSignal %d received\n", signum);
-	rte_atomic16_set(&global_exit_flag, 1);
+	__atomic_store_n(&global_exit_flag, 1, __ATOMIC_RELAXED);
 }
 
 static void
 print_mac(unsigned int portid, struct rte_ether_addr *bbdev_ports_eth_address)
 {
-	printf("Port %u, MAC address: %02X:%02X:%02X:%02X:%02X:%02X\n\n",
+	printf("Port %u, MAC address: " RTE_ETHER_ADDR_PRT_FMT "\n\n",
 			(unsigned int) portid,
-			bbdev_ports_eth_address->addr_bytes[0],
-			bbdev_ports_eth_address->addr_bytes[1],
-			bbdev_ports_eth_address->addr_bytes[2],
-			bbdev_ports_eth_address->addr_bytes[3],
-			bbdev_ports_eth_address->addr_bytes[4],
-			bbdev_ports_eth_address->addr_bytes[5]);
+			RTE_ETHER_ADDR_BYTES(bbdev_ports_eth_address));
 }
 
 static inline void
@@ -328,13 +320,13 @@ check_port_link_status(uint16_t port_id)
 	fflush(stdout);
 
 	for (count = 0; count <= MAX_CHECK_TIME &&
-			!rte_atomic16_read(&global_exit_flag); count++) {
+			!__atomic_load_n(&global_exit_flag, __ATOMIC_RELAXED); count++) {
 		memset(&link, 0, sizeof(link));
 		link_get_err = rte_eth_link_get_nowait(port_id, &link);
 
 		if (link_get_err >= 0 && link.link_status) {
 			const char *dp = (link.link_duplex ==
-				ETH_LINK_FULL_DUPLEX) ?
+				RTE_ETH_LINK_FULL_DUPLEX) ?
 				"full-duplex" : "half-duplex";
 			printf("\nPort %u Link Up - speed %s - %s\n",
 				port_id,
@@ -379,7 +371,7 @@ add_awgn(struct rte_mbuf **mbufs, uint16_t num_pkts)
 /* Encoder output to Decoder input adapter. The Decoder accepts only soft input
  * so each bit of the encoder output must be translated into one byte of LLR. If
  * Sub-block Deinterleaver is bypassed, which is the case, the padding bytes
- * must additionally be insterted at the end of each sub-block.
+ * must additionally be inserted at the end of each sub-block.
  */
 static inline void
 transform_enc_out_dec_in(struct rte_mbuf **mbufs, uint8_t *temp_buf,
@@ -474,7 +466,7 @@ initialize_ports(struct app_config_params *app_params,
 	/* initialize RX queues for encoder */
 	for (q = 0; q < app_params->num_enc_cores; q++) {
 		ret = rte_eth_rx_queue_setup(port_id, q,
-			RTE_TEST_RX_DESC_DEFAULT,
+			RX_DESC_DEFAULT,
 			rte_eth_dev_socket_id(port_id),
 			NULL, ethdev_mbuf_mempool);
 		if (ret < 0) {
@@ -486,7 +478,7 @@ initialize_ports(struct app_config_params *app_params,
 	/* initialize TX queues for decoder */
 	for (q = 0; q < app_params->num_dec_cores; q++) {
 		ret = rte_eth_tx_queue_setup(port_id, q,
-			RTE_TEST_TX_DESC_DEFAULT,
+			TX_DESC_DEFAULT,
 			rte_eth_dev_socket_id(port_id), NULL);
 		if (ret < 0) {
 			printf("rte_eth_tx_queue_setup: err=%d, queue=%u\n",
@@ -682,7 +674,7 @@ stats_loop(void *arg)
 {
 	struct stats_lcore_params *stats_lcore = arg;
 
-	while (!rte_atomic16_read(&global_exit_flag)) {
+	while (!__atomic_load_n(&global_exit_flag, __ATOMIC_RELAXED)) {
 		print_stats(stats_lcore);
 		rte_delay_ms(500);
 	}
@@ -928,7 +920,7 @@ processing_loop(void *arg)
 	const bool run_decoder = (lcore_conf->core_type &
 			(1 << RTE_BBDEV_OP_TURBO_DEC));
 
-	while (!rte_atomic16_read(&global_exit_flag)) {
+	while (!__atomic_load_n(&global_exit_flag, __ATOMIC_RELAXED)) {
 		if (run_encoder)
 			run_encoding(lcore_conf);
 		if (run_decoder)
@@ -1048,7 +1040,7 @@ main(int argc, char **argv)
 	void *sigret;
 	struct app_config_params app_params = def_app_config;
 	struct rte_mempool *ethdev_mbuf_mempool, *bbdev_mbuf_mempool;
-	struct rte_mempool *bbdev_op_pools[RTE_BBDEV_OP_TYPE_COUNT];
+	struct rte_mempool *bbdev_op_pools[RTE_BBDEV_OP_TYPE_SIZE_MAX];
 	struct lcore_conf lcore_conf[RTE_MAX_LCORE] = { {0} };
 	struct lcore_statistics lcore_stats[RTE_MAX_LCORE] = { {0} };
 	struct stats_lcore_params stats_lcore;
@@ -1062,7 +1054,7 @@ main(int argc, char **argv)
 		.align = __alignof__(struct rte_mbuf *),
 	};
 
-	rte_atomic16_init(&global_exit_flag);
+	__atomic_store_n(&global_exit_flag, 0, __ATOMIC_RELAXED);
 
 	sigret = signal(SIGTERM, signal_handler);
 	if (sigret == SIG_ERR)
@@ -1194,6 +1186,9 @@ main(int argc, char **argv)
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		ret |= rte_eal_wait_lcore(lcore_id);
 	}
+
+	/* clean up the EAL */
+	rte_eal_cleanup();
 
 	return ret;
 }

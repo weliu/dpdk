@@ -16,6 +16,7 @@
  * gives packet per second measurement.
  */
 
+#include <locale.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,7 @@
 #include <rte_mtr.h>
 
 #include "config.h"
+#include "actions_gen.h"
 #include "flow_gen.h"
 
 #define MAX_BATCHES_COUNT          100
@@ -44,23 +46,48 @@
 #define DEFAULT_RULES_BATCH     100000
 #define DEFAULT_GROUP                0
 
+#define HAIRPIN_RX_CONF_FORCE_MEMORY  (0x0001)
+#define HAIRPIN_TX_CONF_FORCE_MEMORY  (0x0002)
+
+#define HAIRPIN_RX_CONF_LOCKED_MEMORY (0x0010)
+#define HAIRPIN_RX_CONF_RTE_MEMORY    (0x0020)
+
+#define HAIRPIN_TX_CONF_LOCKED_MEMORY (0x0100)
+#define HAIRPIN_TX_CONF_RTE_MEMORY    (0x0200)
+
 struct rte_flow *flow;
 static uint8_t flow_group;
 
 static uint64_t encap_data;
 static uint64_t decap_data;
+static uint64_t all_actions[RTE_COLORS][MAX_ACTIONS_NUM];
+static char *actions_str[RTE_COLORS];
 
 static uint64_t flow_items[MAX_ITEMS_NUM];
 static uint64_t flow_actions[MAX_ACTIONS_NUM];
 static uint64_t flow_attrs[MAX_ATTRS_NUM];
+static uint32_t policy_id[MAX_PORTS];
 static uint8_t items_idx, actions_idx, attrs_idx;
 
 static uint64_t ports_mask;
+static uint64_t hairpin_conf_mask;
+static uint16_t dst_ports[RTE_MAX_ETHPORTS];
 static volatile bool force_quit;
 static bool dump_iterations;
 static bool delete_flag;
 static bool dump_socket_mem_flag;
 static bool enable_fwd;
+static bool unique_data;
+static bool policy_mtr;
+static bool packet_mode;
+
+static uint8_t rx_queues_count;
+static uint8_t tx_queues_count;
+static uint8_t rxd_count;
+static uint8_t txd_count;
+static uint32_t mbuf_size;
+static uint32_t mbuf_cache_size;
+static uint32_t total_mbuf_num;
 
 static struct rte_mempool *mbuf_mp;
 static uint32_t nb_lcores;
@@ -68,6 +95,9 @@ static uint32_t rules_count;
 static uint32_t rules_batch;
 static uint32_t hairpin_queues_num; /* total hairpin q number - default: 0 */
 static uint32_t nb_lcores;
+static uint8_t max_priority;
+static uint32_t rand_seed;
+static uint64_t meter_profile_values[3]; /* CIR CBS EBS values. */
 
 #define MAX_PKT_BURST    32
 #define LCORE_MODE_PKT    1
@@ -104,14 +134,345 @@ struct used_cpu_time {
 struct multi_cores_pool {
 	uint32_t cores_count;
 	uint32_t rules_count;
-	struct used_cpu_time create_meter;
-	struct used_cpu_time create_flow;
+	struct used_cpu_time meters_record;
+	struct used_cpu_time flows_record;
 	int64_t last_alloc[RTE_MAX_LCORE];
 	int64_t current_alloc[RTE_MAX_LCORE];
 } __rte_cache_aligned;
 
 static struct multi_cores_pool mc_pool = {
 	.cores_count = 1,
+};
+
+static const struct option_dict {
+	const char *str;
+	const uint64_t mask;
+	uint64_t *map;
+	uint8_t *map_idx;
+
+} flow_options[] = {
+	{
+		.str = "ether",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ETH),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "ipv4",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_IPV4),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "ipv6",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_IPV6),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "vlan",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VLAN),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "tcp",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_TCP),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "udp",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_UDP),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "vxlan",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VXLAN),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "vxlan-gpe",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VXLAN_GPE),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "gre",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GRE),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "geneve",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GENEVE),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "gtp",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GTP),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "meta",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_META),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "tag",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_TAG),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "icmpv4",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ICMP),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "icmpv6",
+		.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ICMP6),
+		.map = &flow_items[0],
+		.map_idx = &items_idx
+	},
+	{
+		.str = "ingress",
+		.mask = INGRESS,
+		.map = &flow_attrs[0],
+		.map_idx = &attrs_idx
+	},
+	{
+		.str = "egress",
+		.mask = EGRESS,
+		.map = &flow_attrs[0],
+		.map_idx = &attrs_idx
+	},
+	{
+		.str = "transfer",
+		.mask = TRANSFER,
+		.map = &flow_attrs[0],
+		.map_idx = &attrs_idx
+	},
+	{
+		.str = "port-id",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_PORT_ID),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "rss",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_RSS),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "queue",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_QUEUE),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "jump",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_JUMP),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "mark",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_MARK),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "count",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_COUNT),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-meta",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_SET_META),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-tag",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_SET_TAG),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "drop",
+		.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_DROP),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-src-mac",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_MAC_SRC
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-dst-mac",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_MAC_DST
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-src-ipv4",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-dst-ipv4",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV4_DST
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-src-ipv6",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-dst-ipv6",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV6_DST
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-src-tp",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_TP_SRC
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-dst-tp",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_TP_DST
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "inc-tcp-ack",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_INC_TCP_ACK
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "dec-tcp-ack",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_DEC_TCP_ACK
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "inc-tcp-seq",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_INC_TCP_SEQ
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "dec-tcp-seq",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_DEC_TCP_SEQ
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-ttl",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_TTL
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "dec-ttl",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_DEC_TTL
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-ipv4-dscp",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV4_DSCP
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "set-ipv6-dscp",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_SET_IPV6_DSCP
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "flag",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_FLAG
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "meter",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_METER
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "vxlan-encap",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
+	{
+		.str = "vxlan-decap",
+		.mask = FLOW_ACTION_MASK(
+			RTE_FLOW_ACTION_TYPE_VXLAN_DECAP
+		),
+		.map = &flow_actions[0],
+		.map_idx = &actions_idx
+	},
 };
 
 static void
@@ -131,6 +492,16 @@ usage(char *progname)
 	printf("  --enable-fwd: To enable packets forwarding"
 		" after insertion\n");
 	printf("  --portmask=N: hexadecimal bitmask of ports used\n");
+	printf("  --hairpin-conf=0xXXXX: hexadecimal bitmask of hairpin queue configuration\n");
+	printf("  --random-priority=N,S: use random priority levels "
+		"from 0 to (N - 1) for flows "
+		"and S as seed for pseudo-random number generator\n");
+	printf("  --unique-data: flag to set using unique data for all"
+		" actions that support data, such as header modify and encap actions\n");
+	printf("  --meter-profile=cir,cbs,ebs: set CIR CBS EBS parameters in meter"
+		" profile, default values are %d,%d,%d\n", METER_CIR,
+		METER_CIR / 8, 0);
+	printf("  --packet-mode: to enable packet mode for meter profile\n");
 
 	printf("To set flow attributes:\n");
 	printf("  --ingress: set ingress attribute in flows\n");
@@ -140,6 +511,14 @@ usage(char *progname)
 		" default is %d\n", DEFAULT_GROUP);
 	printf("  --cores=N: to set the number of needed "
 		"cores to insert rte_flow rules, default is 1\n");
+	printf("  --rxq=N: to set the count of receive queues\n");
+	printf("  --txq=N: to set the count of send queues\n");
+	printf("  --rxd=N: to set the count of rxd\n");
+	printf("  --txd=N: to set the count of txd\n");
+	printf("  --mbuf-size=N: to set the size of mbuf\n");
+	printf("  --mbuf-cache-size=N: to set the size of mbuf cache\n");
+	printf("  --total-mbuf-count=N: to set the count of total mbuf count\n");
+
 
 	printf("To set flow items:\n");
 	printf("  --ether: add ether layer in flow items\n");
@@ -204,6 +583,8 @@ usage(char *progname)
 		"ipv6 dscp value to be set is random each flow\n");
 	printf("  --flag: add flag action to flow actions\n");
 	printf("  --meter: add meter action to flow actions\n");
+	printf("  --policy-mtr=\"g1,g2:y1:r1\": to create meter with specified "
+		"colored actions\n");
 	printf("  --raw-encap=<data>: add raw encap action to flow actions\n"
 		"Data is the data needed to be encaped\n"
 		"Example: raw-encap=ether,ipv4,udp,vxlan\n");
@@ -217,346 +598,56 @@ usage(char *progname)
 }
 
 static void
+read_meter_policy(char *prog, char *arg)
+{
+	char *token;
+	size_t i, j, k;
+
+	j = 0;
+	k = 0;
+	policy_mtr = true;
+	token = strsep(&arg, ":\0");
+	while (token != NULL && j < RTE_COLORS) {
+		actions_str[j++] = token;
+		token = strsep(&arg, ":\0");
+	}
+	j = 0;
+	token = strtok(actions_str[0], ",\0");
+	while (token == NULL && j < RTE_COLORS - 1)
+		token = strtok(actions_str[++j], ",\0");
+	while (j < RTE_COLORS && token != NULL) {
+		for (i = 0; i < RTE_DIM(flow_options); i++) {
+			if (!strcmp(token, flow_options[i].str)) {
+				all_actions[j][k++] = flow_options[i].mask;
+				break;
+			}
+		}
+		/* Reached last action with no match */
+		if (i >= RTE_DIM(flow_options)) {
+			fprintf(stderr, "Invalid colored actions: %s\n", token);
+			usage(prog);
+			rte_exit(EXIT_SUCCESS, "Invalid colored actions\n");
+		}
+		token = strtok(NULL, ",\0");
+		while (!token && j < RTE_COLORS - 1) {
+			token = strtok(actions_str[++j], ",\0");
+			k = 0;
+		}
+	}
+}
+
+static void
 args_parse(int argc, char **argv)
 {
-	uint64_t pm;
+	uint64_t pm, seed;
+	uint64_t hp_conf;
 	char **argvopt;
+	uint32_t prio;
 	char *token;
 	char *end;
 	int n, opt;
 	int opt_idx;
 	size_t i;
-
-	static const struct option_dict {
-		const char *str;
-		const uint64_t mask;
-		uint64_t *map;
-		uint8_t *map_idx;
-
-	} flow_options[] = {
-		{
-			.str = "ether",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ETH),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "ipv4",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_IPV4),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "ipv6",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_IPV6),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "vlan",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VLAN),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "tcp",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_TCP),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "udp",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_UDP),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "vxlan",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VXLAN),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "vxlan-gpe",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_VXLAN_GPE),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "gre",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GRE),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "geneve",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GENEVE),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "gtp",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_GTP),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "meta",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_META),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "tag",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_TAG),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "icmpv4",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ICMP),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "icmpv6",
-			.mask = FLOW_ITEM_MASK(RTE_FLOW_ITEM_TYPE_ICMP6),
-			.map = &flow_items[0],
-			.map_idx = &items_idx
-		},
-		{
-			.str = "ingress",
-			.mask = INGRESS,
-			.map = &flow_attrs[0],
-			.map_idx = &attrs_idx
-		},
-		{
-			.str = "egress",
-			.mask = EGRESS,
-			.map = &flow_attrs[0],
-			.map_idx = &attrs_idx
-		},
-		{
-			.str = "transfer",
-			.mask = TRANSFER,
-			.map = &flow_attrs[0],
-			.map_idx = &attrs_idx
-		},
-		{
-			.str = "port-id",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_PORT_ID),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "rss",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_RSS),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "queue",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_QUEUE),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "jump",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_JUMP),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "mark",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_MARK),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "count",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_COUNT),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-meta",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_SET_META),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-tag",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_SET_TAG),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "drop",
-			.mask = FLOW_ACTION_MASK(RTE_FLOW_ACTION_TYPE_DROP),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-src-mac",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_MAC_SRC
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-dst-mac",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_MAC_DST
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-src-ipv4",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV4_SRC
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-dst-ipv4",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV4_DST
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-src-ipv6",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV6_SRC
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-dst-ipv6",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV6_DST
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-src-tp",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_TP_SRC
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-dst-tp",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_TP_DST
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "inc-tcp-ack",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_INC_TCP_ACK
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "dec-tcp-ack",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_DEC_TCP_ACK
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "inc-tcp-seq",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_INC_TCP_SEQ
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "dec-tcp-seq",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_DEC_TCP_SEQ
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-ttl",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_TTL
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "dec-ttl",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_DEC_TTL
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-ipv4-dscp",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV4_DSCP
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "set-ipv6-dscp",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_SET_IPV6_DSCP
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "flag",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_FLAG
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "meter",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_METER
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "vxlan-encap",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_VXLAN_ENCAP
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-		{
-			.str = "vxlan-decap",
-			.mask = FLOW_ACTION_MASK(
-				RTE_FLOW_ACTION_TYPE_VXLAN_DECAP
-			),
-			.map = &flow_actions[0],
-			.map_idx = &actions_idx
-		},
-	};
 
 	static const struct option lgopts[] = {
 		/* Control */
@@ -567,8 +658,19 @@ args_parse(int argc, char **argv)
 		{ "deletion-rate",              0, 0, 0 },
 		{ "dump-socket-mem",            0, 0, 0 },
 		{ "enable-fwd",                 0, 0, 0 },
+		{ "unique-data",                0, 0, 0 },
 		{ "portmask",                   1, 0, 0 },
+		{ "hairpin-conf",               1, 0, 0 },
 		{ "cores",                      1, 0, 0 },
+		{ "random-priority",            1, 0, 0 },
+		{ "meter-profile-alg",          1, 0, 0 },
+		{ "rxq",                        1, 0, 0 },
+		{ "txq",                        1, 0, 0 },
+		{ "rxd",                        1, 0, 0 },
+		{ "txd",                        1, 0, 0 },
+		{ "mbuf-size",                  1, 0, 0 },
+		{ "mbuf-cache-size",            1, 0, 0 },
+		{ "total-mbuf-count",           1, 0, 0 },
 		/* Attributes */
 		{ "ingress",                    0, 0, 0 },
 		{ "egress",                     0, 0, 0 },
@@ -591,7 +693,7 @@ args_parse(int argc, char **argv)
 		{ "icmpv4",                     0, 0, 0 },
 		{ "icmpv6",                     0, 0, 0 },
 		/* Actions */
-		{ "port-id",                    0, 0, 0 },
+		{ "port-id",                    2, 0, 0 },
 		{ "rss",                        0, 0, 0 },
 		{ "queue",                      0, 0, 0 },
 		{ "jump",                       0, 0, 0 },
@@ -619,15 +721,22 @@ args_parse(int argc, char **argv)
 		{ "set-ipv4-dscp",              0, 0, 0 },
 		{ "set-ipv6-dscp",              0, 0, 0 },
 		{ "flag",                       0, 0, 0 },
-		{ "meter",		        0, 0, 0 },
+		{ "meter",                      0, 0, 0 },
 		{ "raw-encap",                  1, 0, 0 },
 		{ "raw-decap",                  1, 0, 0 },
 		{ "vxlan-encap",                0, 0, 0 },
 		{ "vxlan-decap",                0, 0, 0 },
+		{ "policy-mtr",                 1, 0, 0 },
+		{ "meter-profile",              1, 0, 0 },
+		{ "packet-mode",                0, 0, 0 },
+		{ 0, 0, 0, 0 },
 	};
 
 	RTE_ETH_FOREACH_DEV(i)
 		ports_mask |= 1 << i;
+
+	for (i = 0; i < RTE_MAX_ETHPORTS; i++)
+		dst_ports[i] = PORT_ID_DST;
 
 	hairpin_queues_num = 0;
 	argvopt = argv;
@@ -639,7 +748,7 @@ args_parse(int argc, char **argv)
 		case 0:
 			if (strcmp(lgopts[opt_idx].name, "help") == 0) {
 				usage(argv[0]);
-				rte_exit(EXIT_SUCCESS, "Displayed help\n");
+				exit(EXIT_SUCCESS);
 			}
 
 			if (strcmp(lgopts[opt_idx].name, "group") == 0) {
@@ -647,7 +756,7 @@ args_parse(int argc, char **argv)
 				if (n >= 0)
 					flow_group = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"flow group should be >= 0\n");
 				printf("group %d / ", flow_group);
 			}
@@ -667,7 +776,7 @@ args_parse(int argc, char **argv)
 				if (n > 0)
 					hairpin_queues_num = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"Hairpin queues should be > 0\n");
 
 				flow_actions[actions_idx++] =
@@ -680,7 +789,7 @@ args_parse(int argc, char **argv)
 				if (n > 0)
 					hairpin_queues_num = n;
 				else
-					rte_exit(EXIT_SUCCESS,
+					rte_exit(EXIT_FAILURE,
 						"Hairpin queues should be > 0\n");
 
 				flow_actions[actions_idx++] =
@@ -704,11 +813,9 @@ args_parse(int argc, char **argv)
 							break;
 						}
 						/* Reached last item with no match */
-						if (i == (RTE_DIM(flow_options) - 1)) {
-							fprintf(stderr, "Invalid encap item: %s\n", token);
-							usage(argv[0]);
-							rte_exit(EXIT_SUCCESS, "Invalid encap item\n");
-						}
+						if (i == (RTE_DIM(flow_options) - 1))
+							rte_exit(EXIT_FAILURE,
+								"Invalid encap item: %s\n", token);
 					}
 					token = strtok(NULL, ",");
 				}
@@ -726,15 +833,13 @@ args_parse(int argc, char **argv)
 					for (i = 0; i < RTE_DIM(flow_options); i++) {
 						if (strcmp(flow_options[i].str, token) == 0) {
 							printf("%s,", token);
-							encap_data |= flow_options[i].mask;
+							decap_data |= flow_options[i].mask;
 							break;
 						}
 						/* Reached last item with no match */
-						if (i == (RTE_DIM(flow_options) - 1)) {
-							fprintf(stderr, "Invalid decap item: %s\n", token);
-							usage(argv[0]);
-							rte_exit(EXIT_SUCCESS, "Invalid decap item\n");
-						}
+						if (i == (RTE_DIM(flow_options) - 1))
+							rte_exit(EXIT_FAILURE,
+								"Invalid decap item %s\n", token);
 					}
 					token = strtok(NULL, ",");
 				}
@@ -743,28 +848,33 @@ args_parse(int argc, char **argv)
 			/* Control */
 			if (strcmp(lgopts[opt_idx].name,
 					"rules-batch") == 0) {
-				n = atoi(optarg);
-				if (n >= DEFAULT_RULES_BATCH)
-					rules_batch = n;
-				else {
-					printf("\n\nrules_batch should be >= %d\n",
-						DEFAULT_RULES_BATCH);
-					rte_exit(EXIT_SUCCESS, " ");
-				}
+				rules_batch = atoi(optarg);
 			}
 			if (strcmp(lgopts[opt_idx].name,
 					"rules-count") == 0) {
-				n = atoi(optarg);
-				if (n >= (int) rules_batch)
-					rules_count = n;
-				else {
-					printf("\n\nrules_count should be >= %d\n",
-						rules_batch);
-				}
+				rules_count = atoi(optarg);
+			}
+			if (strcmp(lgopts[opt_idx].name, "random-priority") ==
+			    0) {
+				end = NULL;
+				prio = strtol(optarg, &end, 10);
+				if ((optarg[0] == '\0') || (end == NULL))
+					rte_exit(EXIT_FAILURE,
+						 "Invalid value for random-priority\n");
+				max_priority = prio;
+				token = end + 1;
+				seed = strtoll(token, &end, 10);
+				if ((token[0] == '\0') || (*end != '\0'))
+					rte_exit(EXIT_FAILURE,
+						 "Invalid value for random-priority\n");
+				rand_seed = seed;
 			}
 			if (strcmp(lgopts[opt_idx].name,
 					"dump-iterations") == 0)
 				dump_iterations = true;
+			if (strcmp(lgopts[opt_idx].name,
+					"unique-data") == 0)
+				unique_data = true;
 			if (strcmp(lgopts[opt_idx].name,
 					"deletion-rate") == 0)
 				delete_flag = true;
@@ -783,29 +893,100 @@ args_parse(int argc, char **argv)
 					rte_exit(EXIT_FAILURE, "Invalid fwd port mask\n");
 				ports_mask = pm;
 			}
+			if (strcmp(lgopts[opt_idx].name, "hairpin-conf") == 0) {
+				end = NULL;
+				hp_conf = strtoull(optarg, &end, 16);
+				if ((optarg[0] == '\0') || (end == NULL) || (*end != '\0'))
+					rte_exit(EXIT_FAILURE, "Invalid hairpin config mask\n");
+				hairpin_conf_mask = hp_conf;
+			}
+			if (strcmp(lgopts[opt_idx].name,
+					"port-id") == 0) {
+				uint16_t port_idx = 0;
+				char *token;
+
+				token = strtok(optarg, ",");
+				while (token != NULL) {
+					dst_ports[port_idx++] = atoi(token);
+					token = strtok(NULL, ",");
+				}
+			}
+			if (strcmp(lgopts[opt_idx].name, "rxq") == 0) {
+				n = atoi(optarg);
+				rx_queues_count = (uint8_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "txq") == 0) {
+				n = atoi(optarg);
+				tx_queues_count = (uint8_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "rxd") == 0) {
+				n = atoi(optarg);
+				rxd_count = (uint8_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "txd") == 0) {
+				n = atoi(optarg);
+				txd_count = (uint8_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "mbuf-size") == 0) {
+				n = atoi(optarg);
+				mbuf_size = (uint32_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "mbuf-cache-size") == 0) {
+				n = atoi(optarg);
+				mbuf_cache_size = (uint32_t) n;
+			}
+			if (strcmp(lgopts[opt_idx].name, "total-mbuf-count") == 0) {
+				n = atoi(optarg);
+				total_mbuf_num = (uint32_t) n;
+			}
 			if (strcmp(lgopts[opt_idx].name, "cores") == 0) {
 				n = atoi(optarg);
 				if ((int) rte_lcore_count() <= n) {
-					printf("\nError: you need %d cores to run on multi-cores\n"
+					rte_exit(EXIT_FAILURE,
+						"Error: you need %d cores to run on multi-cores\n"
 						"Existing cores are: %d\n", n, rte_lcore_count());
-					rte_exit(EXIT_FAILURE, " ");
 				}
 				if (n <= RTE_MAX_LCORE && n > 0)
 					mc_pool.cores_count = n;
 				else {
-					printf("Error: cores count must be > 0 "
-						" and < %d\n", RTE_MAX_LCORE);
-					rte_exit(EXIT_FAILURE, " ");
+					rte_exit(EXIT_FAILURE,
+						"Error: cores count must be > 0 and < %d\n",
+						RTE_MAX_LCORE);
 				}
 			}
+			if (strcmp(lgopts[opt_idx].name, "policy-mtr") == 0)
+				read_meter_policy(argv[0], optarg);
+			if (strcmp(lgopts[opt_idx].name,
+						"meter-profile") == 0) {
+				i = 0;
+				token = strsep(&optarg, ",\0");
+				while (token != NULL && i < sizeof(
+						meter_profile_values) /
+						sizeof(uint64_t)) {
+					meter_profile_values[i++] = atol(token);
+					token = strsep(&optarg, ",\0");
+				}
+			}
+			if (strcmp(lgopts[opt_idx].name, "packet-mode") == 0)
+				packet_mode = true;
 			break;
 		default:
-			fprintf(stderr, "Invalid option: %s\n", argv[optind]);
 			usage(argv[0]);
-			rte_exit(EXIT_SUCCESS, "Invalid option\n");
+			rte_exit(EXIT_FAILURE, "Invalid option: %s\n",
+					argv[optind - 1]);
 			break;
 		}
 	}
+	if (rules_count % rules_batch != 0) {
+		rte_exit(EXIT_FAILURE,
+			 "rules_count %% rules_batch should be 0\n");
+	}
+	if (rules_count / rules_batch > MAX_BATCHES_COUNT) {
+		rte_exit(EXIT_FAILURE,
+			 "rules_count / rules_batch should be <= %d\n",
+			 MAX_BATCHES_COUNT);
+	}
+
 	printf("end_flow\n");
 }
 
@@ -892,7 +1073,6 @@ print_rules_batches(double *cpu_time_per_batch)
 	}
 }
 
-
 static inline int
 has_meter(void)
 {
@@ -909,11 +1089,65 @@ has_meter(void)
 }
 
 static void
+create_meter_policy(void)
+{
+	struct rte_mtr_error error;
+	int ret, port_id;
+	struct rte_mtr_meter_policy_params policy;
+	uint16_t nr_ports;
+	struct rte_flow_action actions[RTE_COLORS][MAX_ACTIONS_NUM];
+	int i;
+
+	memset(actions, 0, sizeof(actions));
+	memset(&policy, 0, sizeof(policy));
+	nr_ports = rte_eth_dev_count_avail();
+	for (port_id = 0; port_id < nr_ports; port_id++) {
+		for (i = 0; i < RTE_COLORS; i++)
+			fill_actions(actions[i], all_actions[i], 0, 0, 0,
+				     0, 0, 0, unique_data, rx_queues_count,
+				     dst_ports[port_id]);
+		policy.actions[RTE_COLOR_GREEN] = actions[RTE_COLOR_GREEN];
+		policy.actions[RTE_COLOR_YELLOW] = actions[RTE_COLOR_YELLOW];
+		policy.actions[RTE_COLOR_RED] = actions[RTE_COLOR_RED];
+		policy_id[port_id] = port_id + 10;
+		ret = rte_mtr_meter_policy_add(port_id, policy_id[port_id],
+					       &policy, &error);
+		if (ret) {
+			fprintf(stderr, "port %d: failed to create meter policy\n",
+				port_id);
+			policy_id[port_id] = UINT32_MAX;
+		}
+		memset(actions, 0, sizeof(actions));
+	}
+}
+
+static void
+destroy_meter_policy(void)
+{
+	struct rte_mtr_error error;
+	uint16_t nr_ports;
+	int port_id;
+
+	nr_ports = rte_eth_dev_count_avail();
+	for (port_id = 0; port_id < nr_ports; port_id++) {
+		/* If port outside portmask */
+		if (!((ports_mask >> port_id) & 0x1))
+			continue;
+
+		if (rte_mtr_meter_policy_delete
+			(port_id, policy_id[port_id], &error)) {
+			fprintf(stderr, "port %u:  failed to  delete meter policy\n",
+				port_id);
+			rte_exit(EXIT_FAILURE, "Error: Failed to delete meter policy.\n");
+		}
+	}
+}
+
+static void
 create_meter_rule(int port_id, uint32_t counter)
 {
 	int ret;
 	struct rte_mtr_params params;
-	uint32_t default_prof_id = 100;
 	struct rte_mtr_error error;
 
 	memset(&params, 0, sizeof(struct rte_mtr_params));
@@ -923,20 +1157,20 @@ create_meter_rule(int port_id, uint32_t counter)
 	params.dscp_table = NULL;
 
 	/*create meter*/
-	params.meter_profile_id = default_prof_id;
-	params.action[RTE_COLOR_GREEN] =
-		MTR_POLICER_ACTION_COLOR_GREEN;
-	params.action[RTE_COLOR_YELLOW] =
-		MTR_POLICER_ACTION_COLOR_YELLOW;
-	params.action[RTE_COLOR_RED] =
-		MTR_POLICER_ACTION_DROP;
+	params.meter_profile_id = DEFAULT_METER_PROF_ID;
 
-	ret = rte_mtr_create(port_id, counter, &params, 1, &error);
+	if (!policy_mtr) {
+		ret = rte_mtr_create(port_id, counter, &params, 1, &error);
+	} else {
+		params.meter_policy_id = policy_id[port_id];
+		ret = rte_mtr_create(port_id, counter, &params, 0, &error);
+	}
+
 	if (ret != 0) {
 		printf("Port %u create meter idx(%d) error(%d) message: %s\n",
 			port_id, counter, error.type,
 			error.message ? error.message : "(no stated reason)");
-		rte_exit(EXIT_FAILURE, "error in creating meter");
+		rte_exit(EXIT_FAILURE, "Error in creating meter\n");
 	}
 }
 
@@ -945,10 +1179,15 @@ destroy_meter_rule(int port_id, uint32_t counter)
 {
 	struct rte_mtr_error error;
 
+	if (policy_mtr && policy_id[port_id] != UINT32_MAX) {
+		if (rte_mtr_meter_policy_delete(port_id, policy_id[port_id],
+					&error))
+			fprintf(stderr, "Error: Failed to delete meter policy\n");
+		policy_id[port_id] = UINT32_MAX;
+	}
 	if (rte_mtr_destroy(port_id, counter, &error)) {
-		printf("Port %u destroy meter(%d) error(%d) message: %s\n",
-			port_id, counter, error.type,
-			error.message ? error.message : "(no stated reason)");
+		fprintf(stderr, "Port %d: Failed to delete meter.\n",
+				port_id);
 		rte_exit(EXIT_FAILURE, "Error in deleting meter rule");
 	}
 }
@@ -969,7 +1208,7 @@ meters_handler(int port_id, uint8_t core_id, uint8_t ops)
 	end_counter = (core_id + 1) * rules_count_per_core;
 
 	cpu_time_used = 0;
-	start_batch = rte_rdtsc();
+	start_batch = rte_get_timer_cycles();
 	for (counter = start_counter; counter < end_counter; counter++) {
 		if (ops == METER_CREATE)
 			create_meter_rule(port_id, counter);
@@ -984,10 +1223,10 @@ meters_handler(int port_id, uint8_t core_id, uint8_t ops)
 		if (!((counter + 1) % rules_batch)) {
 			rules_batch_idx = ((counter + 1) / rules_batch) - 1;
 			cpu_time_per_batch[rules_batch_idx] =
-				((double)(rte_rdtsc() - start_batch))
-				/ rte_get_tsc_hz();
+				((double)(rte_get_timer_cycles() - start_batch))
+				/ rte_get_timer_hz();
 			cpu_time_used += cpu_time_per_batch[rules_batch_idx];
-			start_batch = rte_rdtsc();
+			start_batch = rte_get_timer_cycles();
 		}
 	}
 
@@ -1006,10 +1245,10 @@ meters_handler(int port_id, uint8_t core_id, uint8_t ops)
 		cpu_time_used, insertion_rate);
 
 	if (ops == METER_CREATE)
-		mc_pool.create_meter.insertion[port_id][core_id]
+		mc_pool.meters_record.insertion[port_id][core_id]
 			= cpu_time_used;
 	else
-		mc_pool.create_meter.deletion[port_id][core_id]
+		mc_pool.meters_record.deletion[port_id][core_id]
 			= cpu_time_used;
 }
 
@@ -1054,12 +1293,13 @@ create_meter_profile(void)
 		/* If port outside portmask */
 		if (!((ports_mask >> port_id) & 0x1))
 			continue;
-
 		mp.alg = RTE_MTR_SRTCM_RFC2697;
-		mp.srtcm_rfc2697.cir = METER_CIR;
-		mp.srtcm_rfc2697.cbs = METER_CIR / 8;
-		mp.srtcm_rfc2697.ebs = 0;
-
+		mp.srtcm_rfc2697.cir = meter_profile_values[0] ?
+			meter_profile_values[0] : METER_CIR;
+		mp.srtcm_rfc2697.cbs = meter_profile_values[1] ?
+			meter_profile_values[1] : METER_CIR / 8;
+		mp.srtcm_rfc2697.ebs = meter_profile_values[2];
+		mp.packet_mode = packet_mode;
 		ret = rte_mtr_meter_profile_add
 			(port_id, DEFAULT_METER_PROF_ID, &mp, &error);
 		if (ret != 0) {
@@ -1089,7 +1329,7 @@ destroy_flows(int port_id, uint8_t core_id, struct rte_flow **flows_list)
 	if (flow_group > 0 && core_id == 0)
 		rules_count_per_core++;
 
-	start_batch = rte_rdtsc();
+	start_batch = rte_get_timer_cycles();
 	for (i = 0; i < (uint32_t) rules_count_per_core; i++) {
 		if (flows_list[i] == 0)
 			break;
@@ -1097,7 +1337,7 @@ destroy_flows(int port_id, uint8_t core_id, struct rte_flow **flows_list)
 		memset(&error, 0x33, sizeof(error));
 		if (rte_flow_destroy(port_id, flows_list[i], &error)) {
 			print_flow_error(error);
-			rte_exit(EXIT_FAILURE, "Error in deleting flow");
+			rte_exit(EXIT_FAILURE, "Error in deleting flow\n");
 		}
 
 		/*
@@ -1107,12 +1347,12 @@ destroy_flows(int port_id, uint8_t core_id, struct rte_flow **flows_list)
 		 * for this batch.
 		 */
 		if (!((i + 1) % rules_batch)) {
-			end_batch = rte_rdtsc();
+			end_batch = rte_get_timer_cycles();
 			delta = (double) (end_batch - start_batch);
 			rules_batch_idx = ((i + 1) / rules_batch) - 1;
-			cpu_time_per_batch[rules_batch_idx] = delta / rte_get_tsc_hz();
+			cpu_time_per_batch[rules_batch_idx] = delta / rte_get_timer_hz();
 			cpu_time_used += cpu_time_per_batch[rules_batch_idx];
-			start_batch = rte_rdtsc();
+			start_batch = rte_get_timer_cycles();
 		}
 	}
 
@@ -1127,15 +1367,16 @@ destroy_flows(int port_id, uint8_t core_id, struct rte_flow **flows_list)
 	printf(":: Port %d :: Core %d :: The time for deleting %d rules is %f seconds\n",
 		port_id, core_id, rules_count_per_core, cpu_time_used);
 
-	mc_pool.create_flow.deletion[port_id][core_id] = cpu_time_used;
+	mc_pool.flows_record.deletion[port_id][core_id] = cpu_time_used;
 }
 
 static struct rte_flow **
-insert_flows(int port_id, uint8_t core_id)
+insert_flows(int port_id, uint8_t core_id, uint16_t dst_port_id)
 {
 	struct rte_flow **flows_list;
 	struct rte_flow_error error;
 	clock_t start_batch, end_batch;
+	double first_flow_latency;
 	double cpu_time_used;
 	double insertion_rate;
 	double cpu_time_per_batch[MAX_BATCHES_COUNT] = { 0 };
@@ -1160,7 +1401,7 @@ insert_flows(int port_id, uint8_t core_id)
 	flows_list = rte_zmalloc("flows_list",
 		(sizeof(struct rte_flow *) * rules_count_per_core) + 1, 0);
 	if (flows_list == NULL)
-		rte_exit(EXIT_FAILURE, "No Memory available!");
+		rte_exit(EXIT_FAILURE, "No Memory available!\n");
 
 	cpu_time_used = 0;
 	flow_index = 0;
@@ -1176,30 +1417,42 @@ insert_flows(int port_id, uint8_t core_id)
 		 */
 		flow = generate_flow(port_id, 0, flow_attrs,
 			global_items, global_actions,
-			flow_group, 0, 0, 0, 0, core_id, &error);
+			flow_group, 0, 0, 0, 0, dst_port_id, core_id,
+			rx_queues_count, unique_data, max_priority, &error);
 
 		if (flow == NULL) {
 			print_flow_error(error);
-			rte_exit(EXIT_FAILURE, "error in creating flow");
+			rte_exit(EXIT_FAILURE, "Error in creating flow\n");
 		}
 		flows_list[flow_index++] = flow;
 	}
 
-	start_batch = rte_rdtsc();
+	start_batch = rte_get_timer_cycles();
 	for (counter = start_counter; counter < end_counter; counter++) {
 		flow = generate_flow(port_id, flow_group,
 			flow_attrs, flow_items, flow_actions,
 			JUMP_ACTION_TABLE, counter,
-			hairpin_queues_num,
-			encap_data, decap_data,
-			core_id, &error);
+			hairpin_queues_num, encap_data,
+			decap_data, dst_port_id,
+			core_id, rx_queues_count,
+			unique_data, max_priority, &error);
+
+		if (!counter) {
+			first_flow_latency = (double) (rte_get_timer_cycles() - start_batch);
+			first_flow_latency /= rte_get_timer_hz();
+			/* In millisecond */
+			first_flow_latency *= 1000;
+			printf(":: First Flow Latency :: Port %d :: First flow "
+				"installed in %f milliseconds\n",
+				port_id, first_flow_latency);
+		}
 
 		if (force_quit)
 			counter = end_counter;
 
 		if (!flow) {
 			print_flow_error(error);
-			rte_exit(EXIT_FAILURE, "error in creating flow");
+			rte_exit(EXIT_FAILURE, "Error in creating flow\n");
 		}
 
 		flows_list[flow_index++] = flow;
@@ -1211,12 +1464,12 @@ insert_flows(int port_id, uint8_t core_id)
 		 * for this batch.
 		 */
 		if (!((counter + 1) % rules_batch)) {
-			end_batch = rte_rdtsc();
+			end_batch = rte_get_timer_cycles();
 			delta = (double) (end_batch - start_batch);
 			rules_batch_idx = ((counter + 1) / rules_batch) - 1;
-			cpu_time_per_batch[rules_batch_idx] = delta / rte_get_tsc_hz();
+			cpu_time_per_batch[rules_batch_idx] = delta / rte_get_timer_hz();
 			cpu_time_used += cpu_time_per_batch[rules_batch_idx];
-			start_batch = rte_rdtsc();
+			start_batch = rte_get_timer_cycles();
 		}
 	}
 
@@ -1234,7 +1487,7 @@ insert_flows(int port_id, uint8_t core_id)
 	printf(":: Port %d :: Core %d :: The time for creating %d in rules %f seconds\n",
 		port_id, core_id, rules_count_per_core, cpu_time_used);
 
-	mc_pool.create_flow.insertion[port_id][core_id] = cpu_time_used;
+	mc_pool.flows_record.insertion[port_id][core_id] = cpu_time_used;
 	return flows_list;
 }
 
@@ -1242,6 +1495,7 @@ static void
 flows_handler(uint8_t core_id)
 {
 	struct rte_flow **flows_list;
+	uint16_t port_idx = 0;
 	uint16_t nr_ports;
 	int port_id;
 
@@ -1261,7 +1515,8 @@ flows_handler(uint8_t core_id)
 		mc_pool.last_alloc[core_id] = (int64_t)dump_socket_mem(stdout);
 		if (has_meter())
 			meters_handler(port_id, core_id, METER_CREATE);
-		flows_list = insert_flows(port_id, core_id);
+		flows_list = insert_flows(port_id, core_id,
+						dst_ports[port_idx++]);
 		if (flows_list == NULL)
 			rte_exit(EXIT_FAILURE, "Error: Insertion Failed!\n");
 		mc_pool.current_alloc[core_id] = (int64_t)dump_socket_mem(stdout);
@@ -1285,7 +1540,7 @@ dump_used_cpu_time(const char *item,
 	 * threads time.
 	 *
 	 * Throughput: total count of rte rules divided
-	 * over the average of the time cosumed by all
+	 * over the average of the time consumed by all
 	 * threads time.
 	 */
 	double insertion_latency_time;
@@ -1430,11 +1685,14 @@ run_rte_flow_handler_cores(void *data __rte_unused)
 	rte_eal_mp_wait_lcore();
 
 	RTE_ETH_FOREACH_DEV(port) {
+		/* If port outside portmask */
+		if (!((ports_mask >> port) & 0x1))
+			continue;
 		if (has_meter())
 			dump_used_cpu_time("Meters:",
-				port, &mc_pool.create_meter);
+				port, &mc_pool.meters_record);
 		dump_used_cpu_time("Flows:",
-			port, &mc_pool.create_flow);
+			port, &mc_pool.flows_record);
 		dump_used_mem(port);
 	}
 
@@ -1476,36 +1734,6 @@ do_tx(struct lcore_info *li, uint16_t cnt, uint16_t tx_port,
 		rte_pktmbuf_free(li->pkts[i]);
 }
 
-/*
- * Method to convert numbers into pretty numbers that easy
- * to read. The design here is to add comma after each three
- * digits and set all of this inside buffer.
- *
- * For example if n = 1799321, the output will be
- * 1,799,321 after this method which is easier to read.
- */
-static char *
-pretty_number(uint64_t n, char *buf)
-{
-	char p[6][4];
-	int i = 0;
-	int off = 0;
-
-	while (n > 1000) {
-		sprintf(p[i], "%03d", (int)(n % 1000));
-		n /= 1000;
-		i += 1;
-	}
-
-	sprintf(p[i++], "%d", (int)n);
-
-	while (i--)
-		off += sprintf(buf + off, "%s,", p[i]);
-	buf[strlen(buf) - 1] = '\0';
-
-	return buf;
-}
-
 static void
 packet_per_second_stats(void)
 {
@@ -1517,7 +1745,7 @@ packet_per_second_stats(void)
 	old = rte_zmalloc("old",
 		sizeof(struct lcore_info) * RTE_MAX_LCORE, 0);
 	if (old == NULL)
-		rte_exit(EXIT_FAILURE, "No Memory available!");
+		rte_exit(EXIT_FAILURE, "No Memory available!\n");
 
 	memcpy(old, lcore_infos,
 		sizeof(struct lcore_info) * RTE_MAX_LCORE);
@@ -1527,7 +1755,6 @@ packet_per_second_stats(void)
 		uint64_t total_rx_pkts = 0;
 		uint64_t total_tx_drops = 0;
 		uint64_t tx_delta, rx_delta, drops_delta;
-		char buf[3][32];
 		int nr_valid_core = 0;
 
 		sleep(1);
@@ -1552,10 +1779,8 @@ packet_per_second_stats(void)
 			tx_delta    = li->tx_pkts  - oli->tx_pkts;
 			rx_delta    = li->rx_pkts  - oli->rx_pkts;
 			drops_delta = li->tx_drops - oli->tx_drops;
-			printf("%6d %16s %16s %16s\n", i,
-				pretty_number(tx_delta,    buf[0]),
-				pretty_number(drops_delta, buf[1]),
-				pretty_number(rx_delta,    buf[2]));
+			printf("%6d %'16"PRId64" %'16"PRId64" %'16"PRId64"\n",
+				i, tx_delta, drops_delta, rx_delta);
 
 			total_tx_pkts  += tx_delta;
 			total_rx_pkts  += rx_delta;
@@ -1566,10 +1791,9 @@ packet_per_second_stats(void)
 		}
 
 		if (nr_valid_core > 1) {
-			printf("%6s %16s %16s %16s\n", "total",
-				pretty_number(total_tx_pkts,  buf[0]),
-				pretty_number(total_tx_drops, buf[1]),
-				pretty_number(total_rx_pkts,  buf[2]));
+			printf("%6s %'16"PRId64" %'16"PRId64" %'16"PRId64"\n",
+				"total", total_tx_pkts, total_tx_drops,
+				total_rx_pkts);
 			nr_lines += 1;
 		}
 
@@ -1650,7 +1874,7 @@ init_lcore_info(void)
 	 * logical cores except first core, since it's reserved for
 	 * stats prints.
 	 */
-	nb_fwd_streams = nr_port * RXQ_NUM;
+	nb_fwd_streams = nr_port * rx_queues_count;
 	if ((int)(nb_lcores - 1) >= nb_fwd_streams)
 		for (i = 0; i < (int)(nb_lcores - 1); i++) {
 			lcore = rte_get_next_lcore(lcore, 0, 0);
@@ -1680,7 +1904,7 @@ init_lcore_info(void)
 	lcore = rte_get_next_lcore(-1, 0, 0);
 	for (port = 0; port < nr_port; port++) {
 		/* Create FWD stream */
-		for (queue = 0; queue < RXQ_NUM; queue++) {
+		for (queue = 0; queue < rx_queues_count; queue++) {
 			if (!lcore_infos[lcore].streams_nb ||
 				!(stream_id % lcore_infos[lcore].streams_nb)) {
 				lcore = rte_get_next_lcore(lcore, 0, 0);
@@ -1733,22 +1957,43 @@ init_port(void)
 	struct rte_eth_rxconf rxq_conf;
 	struct rte_eth_dev_info dev_info;
 
-	nr_queues = RXQ_NUM;
+	nr_queues = rx_queues_count;
 	if (hairpin_queues_num != 0)
-		nr_queues = RXQ_NUM + hairpin_queues_num;
+		nr_queues = rx_queues_count + hairpin_queues_num;
 
 	nr_ports = rte_eth_dev_count_avail();
 	if (nr_ports == 0)
 		rte_exit(EXIT_FAILURE, "Error: no port detected\n");
 
 	mbuf_mp = rte_pktmbuf_pool_create("mbuf_pool",
-					TOTAL_MBUF_NUM, MBUF_CACHE_SIZE,
-					0, MBUF_SIZE,
+					total_mbuf_num, mbuf_cache_size,
+					0, mbuf_size,
 					rte_socket_id());
 	if (mbuf_mp == NULL)
 		rte_exit(EXIT_FAILURE, "Error: can't init mbuf pool\n");
 
 	for (port_id = 0; port_id < nr_ports; port_id++) {
+		uint64_t rx_metadata = 0;
+
+		rx_metadata |= RTE_ETH_RX_METADATA_USER_FLAG;
+		rx_metadata |= RTE_ETH_RX_METADATA_USER_MARK;
+
+		ret = rte_eth_rx_metadata_negotiate(port_id, &rx_metadata);
+		if (ret == 0) {
+			if (!(rx_metadata & RTE_ETH_RX_METADATA_USER_FLAG)) {
+				printf(":: flow action FLAG will not affect Rx mbufs on port=%u\n",
+				       port_id);
+			}
+
+			if (!(rx_metadata & RTE_ETH_RX_METADATA_USER_MARK)) {
+				printf(":: flow action MARK will not affect Rx mbufs on port=%u\n",
+				       port_id);
+			}
+		} else if (ret != -ENOTSUP) {
+			rte_exit(EXIT_FAILURE, "Error when negotiating Rx meta features on port=%u: %s\n",
+				 port_id, rte_strerror(-ret));
+		}
+
 		ret = rte_eth_dev_info_get(port_id, &dev_info);
 		if (ret != 0)
 			rte_exit(EXIT_FAILURE,
@@ -1769,8 +2014,8 @@ init_port(void)
 				ret, port_id);
 
 		rxq_conf = dev_info.default_rxconf;
-		for (std_queue = 0; std_queue < RXQ_NUM; std_queue++) {
-			ret = rte_eth_rx_queue_setup(port_id, std_queue, NR_RXD,
+		for (std_queue = 0; std_queue < rx_queues_count; std_queue++) {
+			ret = rte_eth_rx_queue_setup(port_id, std_queue, rxd_count,
 					rte_eth_dev_socket_id(port_id),
 					&rxq_conf,
 					mbuf_mp);
@@ -1781,8 +2026,8 @@ init_port(void)
 		}
 
 		txq_conf = dev_info.default_txconf;
-		for (std_queue = 0; std_queue < TXQ_NUM; std_queue++) {
-			ret = rte_eth_tx_queue_setup(port_id, std_queue, NR_TXD,
+		for (std_queue = 0; std_queue < tx_queues_count; std_queue++) {
+			ret = rte_eth_tx_queue_setup(port_id, std_queue, txd_count,
 					rte_eth_dev_socket_id(port_id),
 					&txq_conf);
 			if (ret < 0)
@@ -1802,32 +2047,44 @@ init_port(void)
 			/*
 			 * Configure peer which represents hairpin Tx.
 			 * Hairpin queue numbers start after standard queues
-			 * (RXQ_NUM and TXQ_NUM).
+			 * (rx_queues_count and tx_queues_count).
 			 */
-			for (hairpin_queue = RXQ_NUM, std_queue = 0;
+			for (hairpin_queue = rx_queues_count, std_queue = 0;
 					hairpin_queue < nr_queues;
 					hairpin_queue++, std_queue++) {
 				hairpin_conf.peers[0].port = port_id;
 				hairpin_conf.peers[0].queue =
-					std_queue + TXQ_NUM;
+					std_queue + tx_queues_count;
+				hairpin_conf.use_locked_device_memory =
+					!!(hairpin_conf_mask & HAIRPIN_RX_CONF_LOCKED_MEMORY);
+				hairpin_conf.use_rte_memory =
+					!!(hairpin_conf_mask & HAIRPIN_RX_CONF_RTE_MEMORY);
+				hairpin_conf.force_memory =
+					!!(hairpin_conf_mask & HAIRPIN_RX_CONF_FORCE_MEMORY);
 				ret = rte_eth_rx_hairpin_queue_setup(
 						port_id, hairpin_queue,
-						NR_RXD, &hairpin_conf);
+						rxd_count, &hairpin_conf);
 				if (ret != 0)
 					rte_exit(EXIT_FAILURE,
 						":: Hairpin rx queue setup failed: err=%d, port=%u\n",
 						ret, port_id);
 			}
 
-			for (hairpin_queue = TXQ_NUM, std_queue = 0;
+			for (hairpin_queue = tx_queues_count, std_queue = 0;
 					hairpin_queue < nr_queues;
 					hairpin_queue++, std_queue++) {
 				hairpin_conf.peers[0].port = port_id;
 				hairpin_conf.peers[0].queue =
-					std_queue + RXQ_NUM;
+					std_queue + rx_queues_count;
+				hairpin_conf.use_locked_device_memory =
+					!!(hairpin_conf_mask & HAIRPIN_TX_CONF_LOCKED_MEMORY);
+				hairpin_conf.use_rte_memory =
+					!!(hairpin_conf_mask & HAIRPIN_TX_CONF_RTE_MEMORY);
+				hairpin_conf.force_memory =
+					!!(hairpin_conf_mask & HAIRPIN_TX_CONF_FORCE_MEMORY);
 				ret = rte_eth_tx_hairpin_queue_setup(
 						port_id, hairpin_queue,
-						NR_TXD, &hairpin_conf);
+						txd_count, &hairpin_conf);
 				if (ret != 0)
 					rte_exit(EXIT_FAILURE,
 						":: Hairpin tx queue setup failed: err=%d, port=%u\n",
@@ -1863,6 +2120,15 @@ main(int argc, char **argv)
 	delete_flag = false;
 	dump_socket_mem_flag = false;
 	flow_group = DEFAULT_GROUP;
+	unique_data = false;
+
+	rx_queues_count = (uint8_t) RXQ_NUM;
+	tx_queues_count = (uint8_t) TXQ_NUM;
+	rxd_count = (uint8_t) NR_RXD;
+	txd_count = (uint8_t) NR_TXD;
+	mbuf_size = (uint32_t) MBUF_SIZE;
+	mbuf_cache_size = (uint32_t) MBUF_CACHE_SIZE;
+	total_mbuf_num = (uint32_t) TOTAL_MBUF_NUM;
 
 	signal(SIGINT, signal_handler);
 	signal(SIGTERM, signal_handler);
@@ -1872,25 +2138,35 @@ main(int argc, char **argv)
 	if (argc > 1)
 		args_parse(argc, argv);
 
+	/* For more fancy, localised integer formatting. */
+	setlocale(LC_NUMERIC, "");
+
 	init_port();
 
 	nb_lcores = rte_lcore_count();
 	if (nb_lcores <= 1)
 		rte_exit(EXIT_FAILURE, "This app needs at least two cores\n");
 
-
 	printf(":: Flows Count per port: %d\n\n", rules_count);
 
-	if (has_meter())
+	rte_srand(rand_seed);
+
+	if (has_meter()) {
 		create_meter_profile();
+		if (policy_mtr)
+			create_meter_policy();
+	}
 	rte_eal_mp_remote_launch(run_rte_flow_handler_cores, NULL, CALL_MAIN);
 
 	if (enable_fwd) {
 		init_lcore_info();
 		rte_eal_mp_remote_launch(start_forwarding, NULL, CALL_MAIN);
 	}
-	if (has_meter() && delete_flag)
+	if (has_meter() && delete_flag) {
 		destroy_meter_profile();
+		if (policy_mtr)
+			destroy_meter_policy();
+	}
 
 	RTE_ETH_FOREACH_DEV(port) {
 		rte_flow_flush(port, &error);

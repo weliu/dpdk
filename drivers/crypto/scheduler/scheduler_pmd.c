@@ -1,11 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause
  * Copyright(c) 2017 Intel Corporation
  */
+#include <ctype.h>
+#include <stdlib.h>
+
 #include <rte_common.h>
 #include <rte_hexdump.h>
 #include <rte_cryptodev.h>
-#include <rte_cryptodev_pmd.h>
-#include <rte_bus_vdev.h>
+#include <cryptodev_pmd.h>
+#include <bus_vdev_driver.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
 #include <rte_reorder.h>
@@ -228,6 +231,8 @@ cryptodev_scheduler_create(const char *name,
 				"information");
 		return -ENOMEM;
 	}
+
+	rte_cryptodev_pmd_probing_finish(dev);
 
 	return 0;
 }

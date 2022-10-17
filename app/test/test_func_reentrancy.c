@@ -20,7 +20,6 @@
 #include <rte_eal.h>
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
-#include <rte_atomic.h>
 #include <rte_branch_prediction.h>
 #include <rte_ring.h>
 #include <rte_mempool.h>
@@ -54,12 +53,12 @@ typedef void (*case_clean_t)(unsigned lcore_id);
 
 #define MAX_LCORES	(RTE_MAX_MEMZONE / (MAX_ITER_MULTI * 4U))
 
-static rte_atomic32_t obj_count = RTE_ATOMIC32_INIT(0);
-static rte_atomic32_t synchro = RTE_ATOMIC32_INIT(0);
+static uint32_t obj_count;
+static uint32_t synchro;
 
 #define WAIT_SYNCHRO_FOR_WORKERS()   do { \
 	if (lcore_self != rte_get_main_lcore())                  \
-		while (rte_atomic32_read(&synchro) == 0);        \
+		rte_wait_until_equal_32(&synchro, 1, __ATOMIC_RELAXED); \
 } while(0)
 
 /*
@@ -72,7 +71,7 @@ test_eal_init_once(__rte_unused void *arg)
 
 	WAIT_SYNCHRO_FOR_WORKERS();
 
-	rte_atomic32_set(&obj_count, 1); /* silent the check in the caller */
+	__atomic_store_n(&obj_count, 1, __ATOMIC_RELAXED); /* silent the check in the caller */
 	if (rte_eal_init(0, NULL) != -1)
 		return -1;
 
@@ -89,12 +88,14 @@ ring_clean(unsigned int lcore_id)
 	char ring_name[MAX_STRING_SIZE];
 	int i;
 
+	rp = rte_ring_lookup("fr_test_once");
+	rte_ring_free(rp);
+
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(ring_name, sizeof(ring_name),
 				"fr_test_%d_%d", lcore_id, i);
 		rp = rte_ring_lookup(ring_name);
-		if (rp != NULL)
-			rte_ring_free(rp);
+		rte_ring_free(rp);
 	}
 }
 
@@ -112,7 +113,7 @@ ring_create_lookup(__rte_unused void *arg)
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		rp = rte_ring_create("fr_test_once", 4096, SOCKET_ID_ANY, 0);
 		if (rp != NULL)
-			rte_atomic32_inc(&obj_count);
+			__atomic_fetch_add(&obj_count, 1, __ATOMIC_RELAXED);
 	}
 
 	/* create/lookup new ring several times */
@@ -148,13 +149,14 @@ mempool_clean(unsigned int lcore_id)
 	char mempool_name[MAX_STRING_SIZE];
 	int i;
 
-	/* verify all ring created successful */
+	mp = rte_mempool_lookup("fr_test_once");
+	rte_mempool_free(mp);
+
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(mempool_name, sizeof(mempool_name), "fr_test_%d_%d",
 			 lcore_id, i);
 		mp = rte_mempool_lookup(mempool_name);
-		if (mp != NULL)
-			rte_mempool_free(mp);
+		rte_mempool_free(mp);
 	}
 }
 
@@ -176,7 +178,7 @@ mempool_create_lookup(__rte_unused void *arg)
 					my_obj_init, NULL,
 					SOCKET_ID_ANY, 0);
 		if (mp != NULL)
-			rte_atomic32_inc(&obj_count);
+			__atomic_fetch_add(&obj_count, 1, __ATOMIC_RELAXED);
 	}
 
 	/* create/lookup new ring several times */
@@ -207,6 +209,9 @@ hash_clean(unsigned lcore_id)
 	char hash_name[MAX_STRING_SIZE];
 	struct rte_hash *handle;
 	int i;
+
+	handle = rte_hash_find_existing("fr_test_once");
+	rte_hash_free(handle);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d",  lcore_id, i);
@@ -239,10 +244,10 @@ hash_create_free(__rte_unused void *arg)
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		handle = rte_hash_create(&hash_params);
 		if (handle != NULL)
-			rte_atomic32_inc(&obj_count);
+			__atomic_fetch_add(&obj_count, 1, __ATOMIC_RELAXED);
 	}
 
-	/* create mutiple times simultaneously */
+	/* create multiple times simultaneously */
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(hash_name, sizeof(hash_name), "fr_test_%d_%d", lcore_self, i);
 		hash_params.name = hash_name;
@@ -271,6 +276,9 @@ fbk_clean(unsigned lcore_id)
 	char fbk_name[MAX_STRING_SIZE];
 	struct rte_fbk_hash_table *handle;
 	int i;
+
+	handle = rte_fbk_hash_find_existing("fr_test_once");
+	rte_fbk_hash_free(handle);
 
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d",  lcore_id, i);
@@ -303,10 +311,10 @@ fbk_create_free(__rte_unused void *arg)
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		handle = rte_fbk_hash_create(&fbk_params);
 		if (handle != NULL)
-			rte_atomic32_inc(&obj_count);
+			__atomic_fetch_add(&obj_count, 1, __ATOMIC_RELAXED);
 	}
 
-	/* create mutiple fbk tables simultaneously */
+	/* create multiple fbk tables simultaneously */
 	for (i = 0; i < MAX_ITER_MULTI; i++) {
 		snprintf(fbk_name, sizeof(fbk_name), "fr_test_%d_%d", lcore_self, i);
 		fbk_params.name = fbk_name;
@@ -338,6 +346,9 @@ lpm_clean(unsigned int lcore_id)
 	struct rte_lpm *lpm;
 	int i;
 
+	lpm = rte_lpm_find_existing("fr_test_once");
+	rte_lpm_free(lpm);
+
 	for (i = 0; i < MAX_LPM_ITER_TIMES; i++) {
 		snprintf(lpm_name, sizeof(lpm_name), "fr_test_%d_%d",  lcore_id, i);
 
@@ -365,10 +376,10 @@ lpm_create_free(__rte_unused void *arg)
 	for (i = 0; i < MAX_ITER_ONCE; i++) {
 		lpm = rte_lpm_create("fr_test_once",  SOCKET_ID_ANY, &config);
 		if (lpm != NULL)
-			rte_atomic32_inc(&obj_count);
+			__atomic_fetch_add(&obj_count, 1, __ATOMIC_RELAXED);
 	}
 
-	/* create mutiple fbk tables simultaneously */
+	/* create multiple fbk tables simultaneously */
 	for (i = 0; i < MAX_LPM_ITER_TIMES; i++) {
 		snprintf(lpm_name, sizeof(lpm_name), "fr_test_%d_%d", lcore_self, i);
 		lpm = rte_lpm_create(lpm_name, SOCKET_ID_ANY, &config);
@@ -418,18 +429,18 @@ struct test_case test_cases[] = {
 static int
 launch_test(struct test_case *pt_case)
 {
+	unsigned int lcore_id;
+	unsigned int cores;
+	unsigned int count;
 	int ret = 0;
-	unsigned lcore_id;
-	unsigned cores_save = rte_lcore_count();
-	unsigned cores = RTE_MIN(cores_save, MAX_LCORES);
-	unsigned count;
 
 	if (pt_case->func == NULL)
 		return -1;
 
-	rte_atomic32_set(&obj_count, 0);
-	rte_atomic32_set(&synchro, 0);
+	__atomic_store_n(&obj_count, 0, __ATOMIC_RELAXED);
+	__atomic_store_n(&synchro, 0, __ATOMIC_RELAXED);
 
+	cores = RTE_MIN(rte_lcore_count(), MAX_LCORES);
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
 		if (cores == 1)
 			break;
@@ -437,24 +448,22 @@ launch_test(struct test_case *pt_case)
 		rte_eal_remote_launch(pt_case->func, pt_case->arg, lcore_id);
 	}
 
-	rte_atomic32_set(&synchro, 1);
+	__atomic_store_n(&synchro, 1, __ATOMIC_RELAXED);
 
 	if (pt_case->func(pt_case->arg) < 0)
 		ret = -1;
 
-	cores = cores_save;
 	RTE_LCORE_FOREACH_WORKER(lcore_id) {
-		if (cores == 1)
-			break;
-		cores--;
 		if (rte_eal_wait_lcore(lcore_id) < 0)
 			ret = -1;
+	}
 
+	RTE_LCORE_FOREACH(lcore_id) {
 		if (pt_case->clean != NULL)
 			pt_case->clean(lcore_id);
 	}
 
-	count = rte_atomic32_read(&obj_count);
+	count = __atomic_load_n(&obj_count, __ATOMIC_RELAXED);
 	if (count != 1) {
 		printf("%s: common object allocated %d times (should be 1)\n",
 			pt_case->name, count);
@@ -472,6 +481,9 @@ test_func_reentrancy(void)
 {
 	uint32_t case_id;
 	struct test_case *pt_case = NULL;
+
+	if (RTE_EXEC_ENV_IS_WINDOWS)
+		return TEST_SKIPPED;
 
 	if (rte_lcore_count() < 2) {
 		printf("Not enough cores for func_reentrancy_autotest, expecting at least 2\n");

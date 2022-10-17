@@ -2,6 +2,8 @@
  * Copyright(c) 2015 Intel Corporation
  */
 
+#include <stdlib.h>
+
 #include <cmdline_parse.h>
 #include <cmdline_parse_num.h>
 #include <cmdline_parse_string.h>
@@ -498,14 +500,8 @@ pcmd_macaddr_callback(void *ptr_params,
 		stat = rte_ethtool_net_get_mac_addr(params->port, &mac_addr);
 		if (stat == 0) {
 			printf(
-				"Port %i MAC Address: %02x:%02x:%02x:%02x:%02x:%02x\n",
-				params->port,
-				mac_addr.addr_bytes[0],
-				mac_addr.addr_bytes[1],
-				mac_addr.addr_bytes[2],
-				mac_addr.addr_bytes[3],
-				mac_addr.addr_bytes[4],
-				mac_addr.addr_bytes[5]);
+				"Port %i MAC Address: " RTE_ETHER_ADDR_PRT_FMT "\n",
+				params->port, RTE_ETHER_ADDR_BYTES(&mac_addr));
 			return;
 		}
 	}
@@ -528,7 +524,6 @@ pcmd_mtu_callback(void *ptr_params,
 		printf("Error: Invalid port number %i\n", params->port);
 		return;
 	}
-	new_mtu = atoi(params->opt);
 	new_mtu = strtoul(params->opt, &ptr_parse_end, 10);
 	if (*ptr_parse_end != '\0' ||
 			new_mtu < RTE_ETHER_MIN_MTU ||

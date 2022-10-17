@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2018-2019 Hisilicon Limited.
+ * Copyright(c) 2018-2021 HiSilicon Limited.
  */
 
 #include <ethdev_pci.h>
@@ -15,7 +15,7 @@
 #define REG_NUM_PER_LINE	4
 #define REG_LEN_PER_LINE	(REG_NUM_PER_LINE * sizeof(uint32_t))
 
-static int hns3_get_dfx_reg_line(struct hns3_hw *hw, uint32_t *length);
+static int hns3_get_dfx_reg_line(struct hns3_hw *hw, uint32_t *lines);
 
 static const uint32_t cmdq_reg_addrs[] = {HNS3_CMDQ_TX_ADDR_L_REG,
 					  HNS3_CMDQ_TX_ADDR_H_REG,
@@ -294,8 +294,8 @@ hns3_direct_access_regs(struct hns3_hw *hw, uint32_t *data)
 	struct hns3_adapter *hns = HNS3_DEV_HW_TO_ADAPTER(hw);
 	uint32_t *origin_data_ptr = data;
 	uint32_t reg_offset;
-	int reg_num;
-	int i, j;
+	uint16_t i, j;
+	size_t reg_num;
 
 	/* fetching per-PF registers values from PF PCIe register space */
 	reg_num = sizeof(cmdq_reg_addrs) / sizeof(uint32_t);
@@ -484,11 +484,6 @@ hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 	uint32_t *data;
 	int ret;
 
-	if (regs == NULL) {
-		hns3_err(hw, "the input parameter regs is NULL!");
-		return -EINVAL;
-	}
-
 	ret = hns3_get_regs_length(hw, &length);
 	if (ret)
 		return ret;
@@ -503,6 +498,8 @@ hns3_get_regs(struct rte_eth_dev *eth_dev, struct rte_dev_reg_info *regs)
 	/* Only full register dump is supported */
 	if (regs->length && regs->length != length)
 		return -ENOTSUP;
+
+	regs->version = hw->fw_version;
 
 	/* fetching per-PF registers values from PF PCIe register space */
 	data += hns3_direct_access_regs(hw, data);

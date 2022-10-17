@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/queue.h>
@@ -21,7 +22,7 @@
 #include <rte_pause.h>
 #include <rte_service.h>
 #include <rte_service_component.h>
-#include <rte_bus_vdev.h>
+#include <bus_vdev_driver.h>
 
 #include "sw_evdev.h"
 
@@ -873,15 +874,15 @@ xstats_tests(struct test *t)
 	int ret = rte_event_dev_xstats_names_get(evdev,
 					RTE_EVENT_DEV_XSTATS_DEVICE,
 					0, xstats_names, ids, XSTATS_MAX);
-	if (ret != 6) {
-		printf("%d: expected 6 stats, got return %d\n", __LINE__, ret);
+	if (ret != 8) {
+		printf("%d: expected 8 stats, got return %d\n", __LINE__, ret);
 		return -1;
 	}
 	ret = rte_event_dev_xstats_get(evdev,
 					RTE_EVENT_DEV_XSTATS_DEVICE,
 					0, ids, values, ret);
-	if (ret != 6) {
-		printf("%d: expected 6 stats, got return %d\n", __LINE__, ret);
+	if (ret != 8) {
+		printf("%d: expected 8 stats, got return %d\n", __LINE__, ret);
 		return -1;
 	}
 
@@ -959,7 +960,7 @@ xstats_tests(struct test *t)
 	ret = rte_event_dev_xstats_get(evdev,
 					RTE_EVENT_DEV_XSTATS_DEVICE,
 					0, ids, values, num_stats);
-	static const uint64_t expected[] = {3, 3, 0, 1, 0, 0};
+	static const uint64_t expected[] = {3, 3, 0, 1, 0, 0, 4, 1};
 	for (i = 0; (signed int)i < ret; i++) {
 		if (expected[i] != values[i]) {
 			printf(
@@ -975,7 +976,7 @@ xstats_tests(struct test *t)
 					0, NULL, 0);
 
 	/* ensure reset statistics are zero-ed */
-	static const uint64_t expected_zero[] = {0, 0, 0, 0, 0, 0};
+	static const uint64_t expected_zero[] = {0, 0, 0, 0, 0, 0, 0, 0};
 	ret = rte_event_dev_xstats_get(evdev,
 					RTE_EVENT_DEV_XSTATS_DEVICE,
 					0, ids, values, num_stats);
@@ -1109,7 +1110,7 @@ xstats_tests(struct test *t)
 					NULL,
 					0);
 
-	/* Verify that the resetable stats are reset, and others are not */
+	/* Verify that the resettable stats are reset, and others are not */
 	static const uint64_t queue_expected_zero[] = {
 		0 /* rx */,
 		0 /* tx */,
@@ -1460,7 +1461,7 @@ xstats_id_reset_tests(struct test *t)
 	for (i = 0; i < XSTATS_MAX; i++)
 		ids[i] = i;
 
-#define NUM_DEV_STATS 6
+#define NUM_DEV_STATS 8
 	/* Device names / values */
 	int num_stats = rte_event_dev_xstats_names_get(evdev,
 					RTE_EVENT_DEV_XSTATS_DEVICE,
@@ -1504,8 +1505,10 @@ xstats_id_reset_tests(struct test *t)
 	static const char * const dev_names[] = {
 		"dev_rx", "dev_tx", "dev_drop", "dev_sched_calls",
 		"dev_sched_no_iq_enq", "dev_sched_no_cq_enq",
+		"dev_sched_last_iter_bitmask",
+		"dev_sched_progress_last_iter"
 	};
-	uint64_t dev_expected[] = {NPKTS, NPKTS, 0, 1, 0, 0};
+	uint64_t dev_expected[] = {NPKTS, NPKTS, 0, 1, 0, 0, 4, 1};
 	for (i = 0; (int)i < ret; i++) {
 		unsigned int id;
 		uint64_t val = rte_event_dev_xstats_by_name_get(evdev,
@@ -1518,8 +1521,8 @@ xstats_id_reset_tests(struct test *t)
 		}
 		if (val != dev_expected[i]) {
 			printf("%d: %s value incorrect, expected %"
-				PRIu64" got %d\n", __LINE__, dev_names[i],
-				dev_expected[i], id);
+				PRIu64" got %"PRIu64"\n", __LINE__,
+				dev_names[i], dev_expected[i], val);
 			goto fail;
 		}
 		/* reset to zero */
@@ -1542,11 +1545,11 @@ xstats_id_reset_tests(struct test *t)
 		}
 	};
 
-/* 48 is stat offset from start of the devices whole xstats.
+/* 49 is stat offset from start of the devices whole xstats.
  * This WILL break every time we add a statistic to a port
  * or the device, but there is no other way to test
  */
-#define PORT_OFF 48
+#define PORT_OFF 50
 /* num stats for the tested port. CQ size adds more stats to a port */
 #define NUM_PORT_STATS 21
 /* the port to test. */
@@ -1670,7 +1673,7 @@ xstats_id_reset_tests(struct test *t)
 /* queue offset from start of the devices whole xstats.
  * This will break every time we add a statistic to a device/port/queue
  */
-#define QUEUE_OFF 90
+#define QUEUE_OFF 92
 	const uint32_t queue = 0;
 	num_stats = rte_event_dev_xstats_names_get(evdev,
 					RTE_EVENT_DEV_XSTATS_QUEUE, queue,
@@ -3138,8 +3141,8 @@ worker_loopback(struct test *t, uint8_t disable_implicit_release)
 	rte_eal_remote_launch(worker_loopback_worker_fn, t, w_lcore);
 
 	print_cycles = cycles = rte_get_timer_cycles();
-	while (rte_eal_get_lcore_state(p_lcore) != FINISHED ||
-			rte_eal_get_lcore_state(w_lcore) != FINISHED) {
+	while (rte_eal_get_lcore_state(p_lcore) != WAIT ||
+			rte_eal_get_lcore_state(w_lcore) != WAIT) {
 
 		rte_service_run_iter_on_app_lcore(t->service_id, 1);
 

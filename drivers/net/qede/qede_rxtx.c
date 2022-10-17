@@ -38,48 +38,40 @@ static inline int qede_alloc_rx_buffer(struct qede_rx_queue *rxq)
 
 static inline int qede_alloc_rx_bulk_mbufs(struct qede_rx_queue *rxq, int count)
 {
+	void *obj_p[QEDE_MAX_BULK_ALLOC_COUNT] __rte_cache_aligned;
 	struct rte_mbuf *mbuf = NULL;
 	struct eth_rx_bd *rx_bd;
 	dma_addr_t mapping;
 	int i, ret = 0;
 	uint16_t idx;
-	uint16_t mask = NUM_RX_BDS(rxq);
-
-	if (count > QEDE_MAX_BULK_ALLOC_COUNT)
-		count = QEDE_MAX_BULK_ALLOC_COUNT;
 
 	idx = rxq->sw_rx_prod & NUM_RX_BDS(rxq);
 
-	if (count > mask - idx + 1)
-		count = mask - idx + 1;
-
-	ret = rte_mempool_get_bulk(rxq->mb_pool, (void **)&rxq->sw_rx_ring[idx],
-				   count);
-
+	ret = rte_mempool_get_bulk(rxq->mb_pool, obj_p, count);
 	if (unlikely(ret)) {
 		PMD_RX_LOG(ERR, rxq,
 			   "Failed to allocate %d rx buffers "
 			    "sw_rx_prod %u sw_rx_cons %u mp entries %u free %u",
-			    count,
-			    rxq->sw_rx_prod & NUM_RX_BDS(rxq),
-			    rxq->sw_rx_cons & NUM_RX_BDS(rxq),
+			    count, idx, rxq->sw_rx_cons & NUM_RX_BDS(rxq),
 			    rte_mempool_avail_count(rxq->mb_pool),
 			    rte_mempool_in_use_count(rxq->mb_pool));
 		return -ENOMEM;
 	}
 
 	for (i = 0; i < count; i++) {
-		rte_prefetch0(rxq->sw_rx_ring[(idx + 1) & NUM_RX_BDS(rxq)]);
-		mbuf = rxq->sw_rx_ring[idx & NUM_RX_BDS(rxq)];
+		mbuf = obj_p[i];
+		if (likely(i < count - 1))
+			rte_prefetch0(obj_p[i + 1]);
 
+		idx = rxq->sw_rx_prod & NUM_RX_BDS(rxq);
+		rxq->sw_rx_ring[idx] = mbuf;
 		mapping = rte_mbuf_data_iova_default(mbuf);
 		rx_bd = (struct eth_rx_bd *)
 			ecore_chain_produce(&rxq->rx_bd_ring);
 		rx_bd->addr.hi = rte_cpu_to_le_32(U64_HI(mapping));
 		rx_bd->addr.lo = rte_cpu_to_le_32(U64_LO(mapping));
-		idx++;
+		rxq->sw_rx_prod++;
 	}
-	rxq->sw_rx_prod = idx;
 
 	return 0;
 }
@@ -90,7 +82,7 @@ static inline int qede_alloc_rx_bulk_mbufs(struct qede_rx_queue *rxq, int count)
  *    (MTU + Maximum L2 Header Size + 2) / ETH_RX_MAX_BUFF_PER_PKT
  * 3) In regular mode - minimum rx_buf_size should be
  *    (MTU + Maximum L2 Header Size + 2)
- *    In above cases +2 corrosponds to 2 bytes padding in front of L2
+ *    In above cases +2 corresponds to 2 bytes padding in front of L2
  *    header.
  * 4) rx_buf_size should be cacheline-size aligned. So considering
  *    criteria 1, we need to adjust the size to floor instead of ceil,
@@ -106,7 +98,7 @@ qede_calc_rx_buf_size(struct rte_eth_dev *dev, uint16_t mbufsz,
 
 	if (dev->data->scattered_rx) {
 		/* per HW limitation, only ETH_RX_MAX_BUFF_PER_PKT number of
-		 * bufferes can be used for single packet. So need to make sure
+		 * buffers can be used for single packet. So need to make sure
 		 * mbuf size is sufficient enough for this.
 		 */
 		if ((mbufsz * ETH_RX_MAX_BUFF_PER_PKT) <
@@ -224,7 +216,7 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qid,
 	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct qede_rx_queue *rxq;
-	uint16_t max_rx_pkt_len;
+	uint16_t max_rx_pktlen;
 	uint16_t bufsz;
 	int rc;
 
@@ -243,21 +235,21 @@ qede_rx_queue_setup(struct rte_eth_dev *dev, uint16_t qid,
 		dev->data->rx_queues[qid] = NULL;
 	}
 
-	max_rx_pkt_len = (uint16_t)rxmode->max_rx_pkt_len;
+	max_rx_pktlen = dev->data->mtu + RTE_ETHER_HDR_LEN + RTE_ETHER_CRC_LEN;
 
 	/* Fix up RX buffer size */
 	bufsz = (uint16_t)rte_pktmbuf_data_room_size(mp) - RTE_PKTMBUF_HEADROOM;
-	/* cache align the mbuf size to simplfy rx_buf_size calculation */
+	/* cache align the mbuf size to simplify rx_buf_size calculation */
 	bufsz = QEDE_FLOOR_TO_CACHE_LINE_SIZE(bufsz);
-	if ((rxmode->offloads & DEV_RX_OFFLOAD_SCATTER)	||
-	    (max_rx_pkt_len + QEDE_ETH_OVERHEAD) > bufsz) {
+	if ((rxmode->offloads & RTE_ETH_RX_OFFLOAD_SCATTER)	||
+	    (max_rx_pktlen + QEDE_ETH_OVERHEAD) > bufsz) {
 		if (!dev->data->scattered_rx) {
 			DP_INFO(edev, "Forcing scatter-gather mode\n");
 			dev->data->scattered_rx = 1;
 		}
 	}
 
-	rc = qede_calc_rx_buf_size(dev, bufsz, max_rx_pkt_len);
+	rc = qede_calc_rx_buf_size(dev, bufsz, max_rx_pktlen);
 	if (rc < 0)
 		return rc;
 
@@ -706,12 +698,10 @@ void qede_dealloc_fp_resc(struct rte_eth_dev *eth_dev)
 		}
 	}
 
-	if (qdev->fp_array)
-		rte_free(qdev->fp_array);
+	rte_free(qdev->fp_array);
 	qdev->fp_array = NULL;
 
-	if (qdev->fp_array_cmt)
-		rte_free(qdev->fp_array_cmt);
+	rte_free(qdev->fp_array_cmt);
 	qdev->fp_array_cmt = NULL;
 }
 
@@ -721,9 +711,10 @@ qede_update_rx_prod(__rte_unused struct qede_dev *edev,
 {
 	uint16_t bd_prod = ecore_chain_get_prod_idx(&rxq->rx_bd_ring);
 	uint16_t cqe_prod = ecore_chain_get_prod_idx(&rxq->rx_comp_ring);
-	struct eth_rx_prod_data rx_prods = { 0 };
+	struct eth_rx_prod_data rx_prods;
 
 	/* Update producers */
+	memset(&rx_prods, 0, sizeof(rx_prods));
 	rx_prods.bd_prod = rte_cpu_to_le_16(bd_prod);
 	rx_prods.cqe_prod = rte_cpu_to_le_16(cqe_prod);
 
@@ -886,66 +877,53 @@ qede_tx_queue_start(struct rte_eth_dev *eth_dev, uint16_t tx_queue_id)
 }
 
 static inline void
+qede_free_tx_pkt(struct qede_tx_queue *txq)
+{
+	struct rte_mbuf *mbuf;
+	uint16_t nb_segs;
+	uint16_t idx;
+
+	idx = TX_CONS(txq);
+	mbuf = txq->sw_tx_ring[idx];
+	if (mbuf) {
+		nb_segs = mbuf->nb_segs;
+		PMD_TX_LOG(DEBUG, txq, "nb_segs to free %u\n", nb_segs);
+		while (nb_segs) {
+			/* It's like consuming rxbuf in recv() */
+			ecore_chain_consume(&txq->tx_pbl);
+			txq->nb_tx_avail++;
+			nb_segs--;
+		}
+		rte_pktmbuf_free(mbuf);
+		txq->sw_tx_ring[idx] = NULL;
+		txq->sw_tx_cons++;
+		PMD_TX_LOG(DEBUG, txq, "Freed tx packet\n");
+	} else {
+		ecore_chain_consume(&txq->tx_pbl);
+		txq->nb_tx_avail++;
+	}
+}
+
+static inline void
 qede_process_tx_compl(__rte_unused struct ecore_dev *edev,
 		      struct qede_tx_queue *txq)
 {
 	uint16_t hw_bd_cons;
-	uint16_t sw_tx_cons;
-	uint16_t remaining;
-	uint16_t mask;
-	struct rte_mbuf *mbuf;
-	uint16_t nb_segs;
-	uint16_t idx;
-	uint16_t first_idx;
-
-	rte_compiler_barrier();
-	rte_prefetch0(txq->hw_cons_ptr);
-	sw_tx_cons = ecore_chain_get_cons_idx(&txq->tx_pbl);
-	hw_bd_cons = rte_le_to_cpu_16(*txq->hw_cons_ptr);
 #ifdef RTE_LIBRTE_QEDE_DEBUG_TX
+	uint16_t sw_tx_cons;
+#endif
+
+	hw_bd_cons = rte_le_to_cpu_16(*txq->hw_cons_ptr);
+	/* read barrier prevents speculative execution on stale data */
+	rte_rmb();
+
+#ifdef RTE_LIBRTE_QEDE_DEBUG_TX
+	sw_tx_cons = ecore_chain_get_cons_idx(&txq->tx_pbl);
 	PMD_TX_LOG(DEBUG, txq, "Tx Completions = %u\n",
 		   abs(hw_bd_cons - sw_tx_cons));
 #endif
-
-	mask = NUM_TX_BDS(txq);
-	idx = txq->sw_tx_cons & mask;
-
-	remaining = hw_bd_cons - sw_tx_cons;
-	txq->nb_tx_avail += remaining;
-	first_idx = idx;
-
-	while (remaining) {
-		mbuf = txq->sw_tx_ring[idx];
-		RTE_ASSERT(mbuf);
-		nb_segs = mbuf->nb_segs;
-		remaining -= nb_segs;
-
-		/* Prefetch the next mbuf. Note that at least the last 4 mbufs
-		 * that are prefetched will not be used in the current call.
-		 */
-		rte_mbuf_prefetch_part1(txq->sw_tx_ring[(idx + 4) & mask]);
-		rte_mbuf_prefetch_part2(txq->sw_tx_ring[(idx + 4) & mask]);
-
-		PMD_TX_LOG(DEBUG, txq, "nb_segs to free %u\n", nb_segs);
-
-		while (nb_segs) {
-			ecore_chain_consume(&txq->tx_pbl);
-			nb_segs--;
-		}
-
-		idx = (idx + 1) & mask;
-		PMD_TX_LOG(DEBUG, txq, "Freed tx packet\n");
-	}
-	txq->sw_tx_cons = idx;
-
-	if (first_idx > idx) {
-		rte_pktmbuf_free_bulk(&txq->sw_tx_ring[first_idx],
-							  mask - first_idx + 1);
-		rte_pktmbuf_free_bulk(&txq->sw_tx_ring[0], idx);
-	} else {
-		rte_pktmbuf_free_bulk(&txq->sw_tx_ring[first_idx],
-							  idx - first_idx);
-	}
+	while (hw_bd_cons !=  ecore_chain_get_cons_idx(&txq->tx_pbl))
+		qede_free_tx_pkt(txq);
 }
 
 static int qede_drain_txq(struct qede_dev *qdev,
@@ -1558,25 +1536,26 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	uint8_t bitfield_val;
 #endif
 	uint8_t offset, flags, bd_num;
-
+	uint16_t count = 0;
 
 	/* Allocate buffers that we used in previous loop */
 	if (rxq->rx_alloc_count) {
-		if (unlikely(qede_alloc_rx_bulk_mbufs(rxq,
-			     rxq->rx_alloc_count))) {
+		count = rxq->rx_alloc_count > QEDE_MAX_BULK_ALLOC_COUNT ?
+			QEDE_MAX_BULK_ALLOC_COUNT : rxq->rx_alloc_count;
+
+		if (unlikely(qede_alloc_rx_bulk_mbufs(rxq, count))) {
 			struct rte_eth_dev *dev;
 
 			PMD_RX_LOG(ERR, rxq,
-				   "New buffer allocation failed,"
-				   "dropping incoming packetn");
+				   "New buffers allocation failed,"
+				   "dropping incoming packets\n");
 			dev = &rte_eth_devices[rxq->port_id];
-			dev->data->rx_mbuf_alloc_failed +=
-							rxq->rx_alloc_count;
-			rxq->rx_alloc_errors += rxq->rx_alloc_count;
+			dev->data->rx_mbuf_alloc_failed += count;
+			rxq->rx_alloc_errors += count;
 			return 0;
 		}
 		qede_update_rx_prod(qdev, rxq);
-		rxq->rx_alloc_count = 0;
+		rxq->rx_alloc_count -= count;
 	}
 
 	hw_comp_cons = rte_le_to_cpu_16(*rxq->hw_cons_ptr);
@@ -1638,9 +1617,9 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					    "L4 csum failed, flags = 0x%x\n",
 					    parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			}
 
 			if (unlikely(qede_check_tunn_csum_l3(parse_flag))) {
@@ -1648,9 +1627,9 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					"Outer L3 csum failed, flags = 0x%x\n",
 					parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_OUTER_IP_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			}
 
 			flags = fp_cqe->tunnel_pars_flags.flags;
@@ -1683,31 +1662,31 @@ qede_recv_pkts_regular(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 				    "L4 csum failed, flags = 0x%x\n",
 				    parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_L4_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 		}
 		if (unlikely(qede_check_notunn_csum_l3(rx_mb, parse_flag))) {
 			PMD_RX_LOG(ERR, rxq, "IP csum failed, flags = 0x%x\n",
 				   parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_IP_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		}
 
 		if (unlikely(CQE_HAS_VLAN(parse_flag) ||
 			     CQE_HAS_OUTER_VLAN(parse_flag))) {
 			/* Note: FW doesn't indicate Q-in-Q packet */
-			ol_flags |= PKT_RX_VLAN;
+			ol_flags |= RTE_MBUF_F_RX_VLAN;
 			if (qdev->vlan_strip_flg) {
-				ol_flags |= PKT_RX_VLAN_STRIPPED;
+				ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
 				rx_mb->vlan_tci = vlan_tci;
 			}
 		}
 
 		if (rss_enable) {
-			ol_flags |= PKT_RX_RSS_HASH;
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 			rx_mb->hash.rss = rss_hash;
 		}
 
@@ -1744,8 +1723,8 @@ next_cqe:
 		}
 	}
 
-	/* Request number of bufferes to be allocated in next loop */
-	rxq->rx_alloc_count = rx_alloc_count;
+	/* Request number of buffers to be allocated in next loop */
+	rxq->rx_alloc_count += rx_alloc_count;
 
 	rxq->rcv_pkts += rx_pkt;
 	rxq->rx_segs += rx_pkt;
@@ -1785,25 +1764,26 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	struct qede_agg_info *tpa_info = NULL;
 	uint32_t rss_hash;
 	int rx_alloc_count = 0;
-
+	uint16_t count = 0;
 
 	/* Allocate buffers that we used in previous loop */
 	if (rxq->rx_alloc_count) {
-		if (unlikely(qede_alloc_rx_bulk_mbufs(rxq,
-			     rxq->rx_alloc_count))) {
+		count = rxq->rx_alloc_count > QEDE_MAX_BULK_ALLOC_COUNT ?
+			QEDE_MAX_BULK_ALLOC_COUNT : rxq->rx_alloc_count;
+
+		if (unlikely(qede_alloc_rx_bulk_mbufs(rxq, count))) {
 			struct rte_eth_dev *dev;
 
 			PMD_RX_LOG(ERR, rxq,
-				   "New buffer allocation failed,"
-				   "dropping incoming packetn");
+				   "New buffers allocation failed,"
+				   "dropping incoming packets\n");
 			dev = &rte_eth_devices[rxq->port_id];
-			dev->data->rx_mbuf_alloc_failed +=
-							rxq->rx_alloc_count;
-			rxq->rx_alloc_errors += rxq->rx_alloc_count;
+			dev->data->rx_mbuf_alloc_failed += count;
+			rxq->rx_alloc_errors += count;
 			return 0;
 		}
 		qede_update_rx_prod(qdev, rxq);
-		rxq->rx_alloc_count = 0;
+		rxq->rx_alloc_count -= count;
 	}
 
 	hw_comp_cons = rte_le_to_cpu_16(*rxq->hw_cons_ptr);
@@ -1836,7 +1816,7 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 			tpa_info = &rxq->tpa_info[cqe_start_tpa->tpa_agg_index];
 			tpa_start_flg = true;
 			/* Mark it as LRO packet */
-			ol_flags |= PKT_RX_LRO;
+			ol_flags |= RTE_MBUF_F_RX_LRO;
 			/* In split mode,  seg_len is same as len_on_first_bd
 			 * and bw_ext_bd_len_list will be empty since there are
 			 * no additional buffers
@@ -1907,9 +1887,9 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					    "L4 csum failed, flags = 0x%x\n",
 					    parse_flag);
 				rxq->rx_hw_errors++;
-				ol_flags |= PKT_RX_L4_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 			} else {
-				ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 			}
 
 			if (unlikely(qede_check_tunn_csum_l3(parse_flag))) {
@@ -1917,9 +1897,9 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 					"Outer L3 csum failed, flags = 0x%x\n",
 					parse_flag);
 				  rxq->rx_hw_errors++;
-				  ol_flags |= PKT_RX_OUTER_IP_CKSUM_BAD;
+				ol_flags |= RTE_MBUF_F_RX_OUTER_IP_CKSUM_BAD;
 			} else {
-				  ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+				ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 			}
 
 			if (tpa_start_flg)
@@ -1956,32 +1936,32 @@ qede_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 				    "L4 csum failed, flags = 0x%x\n",
 				    parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_L4_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_L4_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_L4_CKSUM_GOOD;
 		}
 		if (unlikely(qede_check_notunn_csum_l3(rx_mb, parse_flag))) {
 			PMD_RX_LOG(ERR, rxq, "IP csum failed, flags = 0x%x\n",
 				   parse_flag);
 			rxq->rx_hw_errors++;
-			ol_flags |= PKT_RX_IP_CKSUM_BAD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_BAD;
 		} else {
-			ol_flags |= PKT_RX_IP_CKSUM_GOOD;
+			ol_flags |= RTE_MBUF_F_RX_IP_CKSUM_GOOD;
 		}
 
 		if (CQE_HAS_VLAN(parse_flag) ||
 		    CQE_HAS_OUTER_VLAN(parse_flag)) {
 			/* Note: FW doesn't indicate Q-in-Q packet */
-			ol_flags |= PKT_RX_VLAN;
+			ol_flags |= RTE_MBUF_F_RX_VLAN;
 			if (qdev->vlan_strip_flg) {
-				ol_flags |= PKT_RX_VLAN_STRIPPED;
+				ol_flags |= RTE_MBUF_F_RX_VLAN_STRIPPED;
 				rx_mb->vlan_tci = vlan_tci;
 			}
 		}
 
 		/* RSS Hash */
 		if (qdev->rss_enable) {
-			ol_flags |= PKT_RX_RSS_HASH;
+			ol_flags |= RTE_MBUF_F_RX_RSS_HASH;
 			rx_mb->hash.rss = rss_hash;
 		}
 
@@ -2041,8 +2021,8 @@ next_cqe:
 		}
 	}
 
-	/* Request number of bufferes to be allocated in next loop */
-	rxq->rx_alloc_count = rx_alloc_count;
+	/* Request number of buffers to be allocated in next loop */
+	rxq->rx_alloc_count += rx_alloc_count;
 
 	rxq->rcv_pkts += rx_pkt;
 
@@ -2177,7 +2157,7 @@ qede_xmit_prep_pkts(__rte_unused void *p_txq, struct rte_mbuf **tx_pkts,
 	for (i = 0; i < nb_pkts; i++) {
 		m = tx_pkts[i];
 		ol_flags = m->ol_flags;
-		if (ol_flags & PKT_TX_TCP_SEG) {
+		if (ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			if (m->nb_segs >= ETH_TX_MAX_BDS_PER_LSO_PACKET) {
 				rte_errno = EINVAL;
 				break;
@@ -2195,14 +2175,14 @@ qede_xmit_prep_pkts(__rte_unused void *p_txq, struct rte_mbuf **tx_pkts,
 		}
 		if (ol_flags & QEDE_TX_OFFLOAD_NOTSUP_MASK) {
 			/* We support only limited tunnel protocols */
-			if (ol_flags & PKT_TX_TUNNEL_MASK) {
+			if (ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) {
 				uint64_t temp;
 
-				temp = ol_flags & PKT_TX_TUNNEL_MASK;
-				if (temp == PKT_TX_TUNNEL_VXLAN ||
-				    temp == PKT_TX_TUNNEL_GENEVE ||
-				    temp == PKT_TX_TUNNEL_MPLSINUDP ||
-				    temp == PKT_TX_TUNNEL_GRE)
+				temp = ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK;
+				if (temp == RTE_MBUF_F_TX_TUNNEL_VXLAN ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_GENEVE ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_MPLSINUDP ||
+				    temp == RTE_MBUF_F_TX_TUNNEL_GRE)
 					continue;
 			}
 
@@ -2310,13 +2290,13 @@ qede_xmit_pkts_regular(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			<< ETH_TX_DATA_1ST_BD_PKT_LEN_SHIFT;
 
 		/* Offload the IP checksum in the hardware */
-		if (tx_ol_flags & PKT_TX_IP_CKSUM)
+		if (tx_ol_flags & RTE_MBUF_F_TX_IP_CKSUM)
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
 
 		/* L4 checksum offload (tcp or udp) */
-		if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-		    (tx_ol_flags & (PKT_TX_UDP_CKSUM | PKT_TX_TCP_CKSUM)))
+		if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+		    (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM)))
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 
@@ -2455,7 +2435,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 * offloads. Don't rely on pkt_type marked by Rx, instead use
 		 * tx_ol_flags to decide.
 		 */
-		tunn_flg = !!(tx_ol_flags & PKT_TX_TUNNEL_MASK);
+		tunn_flg = !!(tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK);
 
 		if (tunn_flg) {
 			/* Check against max which is Tunnel IPv6 + ext */
@@ -2476,8 +2456,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			}
 
 			/* Outer IP checksum offload */
-			if (tx_ol_flags & (PKT_TX_OUTER_IP_CKSUM |
-					   PKT_TX_OUTER_IPV4)) {
+			if (tx_ol_flags & (RTE_MBUF_F_TX_OUTER_IP_CKSUM |
+					   RTE_MBUF_F_TX_OUTER_IPV4)) {
 				bd1_bd_flags_bf |=
 					ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_MASK <<
 					ETH_TX_1ST_BD_FLAGS_TUNN_IP_CSUM_SHIFT;
@@ -2489,8 +2469,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * and inner layers  lengths need to be provided in
 			 * mbuf.
 			 */
-			if ((tx_ol_flags & PKT_TX_TUNNEL_MASK) ==
-						PKT_TX_TUNNEL_MPLSINUDP) {
+			if ((tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) ==
+						RTE_MBUF_F_TX_TUNNEL_MPLSINUDP) {
 				mplsoudp_flg = true;
 #ifdef RTE_LIBRTE_QEDE_DEBUG_TX
 				qede_mpls_tunn_tx_sanity_check(mbuf, txq);
@@ -2505,7 +2485,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				/* Inner L2 header size in two byte words */
 				inner_l2_hdr_size = (mbuf->l2_len -
 						MPLSINUDP_HDR_SIZE) / 2;
-				/* Inner L4 header offset from the beggining
+				/* Inner L4 header offset from the beginning
 				 * of inner packet in two byte words
 				 */
 				inner_l4_hdr_offset = (mbuf->l2_len -
@@ -2523,18 +2503,18 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 				    1 << ETH_TX_DATA_2ND_BD_TUNN_IPV6_EXT_SHIFT;
 
 				/* Mark inner IPv6 if present */
-				if (tx_ol_flags & PKT_TX_IPV6)
+				if (tx_ol_flags & RTE_MBUF_F_TX_IPV6)
 					bd2_bf1 |=
 						1 << ETH_TX_DATA_2ND_BD_TUNN_INNER_IPV6_SHIFT;
 
 				/* Inner L4 offsets */
-				if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-				     (tx_ol_flags & (PKT_TX_UDP_CKSUM |
-							PKT_TX_TCP_CKSUM))) {
+				if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+				     (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM |
+							RTE_MBUF_F_TX_TCP_CKSUM))) {
 					/* Determines if BD3 is needed */
 					tunn_ipv6_ext_flg = true;
-					if ((tx_ol_flags & PKT_TX_L4_MASK) ==
-							PKT_TX_UDP_CKSUM) {
+					if ((tx_ol_flags & RTE_MBUF_F_TX_L4_MASK) ==
+							RTE_MBUF_F_TX_UDP_CKSUM) {
 						bd2_bf1 |=
 							1 << ETH_TX_DATA_2ND_BD_L4_UDP_SHIFT;
 					}
@@ -2552,7 +2532,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			} /* End MPLSoUDP */
 		} /* End Tunnel handling */
 
-		if (tx_ol_flags & PKT_TX_TCP_SEG) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_TCP_SEG) {
 			lso_flg = true;
 			if (unlikely(txq->nb_tx_avail <
 						ETH_TX_MIN_BDS_PER_LSO_PKT))
@@ -2569,7 +2549,7 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			bd1_bd_flags_bf |= 1 << ETH_TX_1ST_BD_FLAGS_LSO_SHIFT;
 			bd1_bd_flags_bf |=
 					1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
-			/* PKT_TX_TCP_SEG implies PKT_TX_TCP_CKSUM */
+			/* RTE_MBUF_F_TX_TCP_SEG implies RTE_MBUF_F_TX_TCP_CKSUM */
 			bd1_bd_flags_bf |=
 					1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 			mss = rte_cpu_to_le_16(mbuf->tso_segsz);
@@ -2586,14 +2566,14 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* Descriptor based VLAN insertion */
-		if (tx_ol_flags & PKT_TX_VLAN_PKT) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_VLAN) {
 			vlan = rte_cpu_to_le_16(mbuf->vlan_tci);
 			bd1_bd_flags_bf |=
 			    1 << ETH_TX_1ST_BD_FLAGS_VLAN_INSERTION_SHIFT;
 		}
 
 		/* Offload the IP checksum in the hardware */
-		if (tx_ol_flags & PKT_TX_IP_CKSUM) {
+		if (tx_ol_flags & RTE_MBUF_F_TX_IP_CKSUM) {
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_IP_CSUM_SHIFT;
 			/* There's no DPDK flag to request outer-L4 csum
@@ -2601,8 +2581,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			 * csum offload is requested then we need to force
 			 * recalculation of L4 tunnel header csum also.
 			 */
-			if (tunn_flg && ((tx_ol_flags & PKT_TX_TUNNEL_MASK) !=
-							PKT_TX_TUNNEL_GRE)) {
+			if (tunn_flg && ((tx_ol_flags & RTE_MBUF_F_TX_TUNNEL_MASK) !=
+							RTE_MBUF_F_TX_TUNNEL_GRE)) {
 				bd1_bd_flags_bf |=
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_MASK <<
 					ETH_TX_1ST_BD_FLAGS_TUNN_L4_CSUM_SHIFT;
@@ -2610,8 +2590,8 @@ qede_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		}
 
 		/* L4 checksum offload (tcp or udp) */
-		if ((tx_ol_flags & (PKT_TX_IPV4 | PKT_TX_IPV6)) &&
-		    (tx_ol_flags & (PKT_TX_UDP_CKSUM | PKT_TX_TCP_CKSUM))) {
+		if ((tx_ol_flags & (RTE_MBUF_F_TX_IPV4 | RTE_MBUF_F_TX_IPV6)) &&
+		    (tx_ol_flags & (RTE_MBUF_F_TX_UDP_CKSUM | RTE_MBUF_F_TX_TCP_CKSUM))) {
 			bd1_bd_flags_bf |=
 				1 << ETH_TX_1ST_BD_FLAGS_L4_CSUM_SHIFT;
 			/* There's no DPDK flag to request outer-L4 csum
@@ -2732,15 +2712,6 @@ qede_xmit_pkts_cmt(void *p_fp_cmt, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 	return eng0_pkts + eng1_pkts;
 }
-
-uint16_t
-qede_rxtx_pkts_dummy(__rte_unused void *p_rxq,
-		     __rte_unused struct rte_mbuf **pkts,
-		     __rte_unused uint16_t nb_pkts)
-{
-	return 0;
-}
-
 
 /* this function does a fake walk through over completion queue
  * to calculate number of BDs used by HW.

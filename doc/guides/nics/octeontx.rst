@@ -108,7 +108,7 @@ for details.
 Initialization
 --------------
 
-The OCTEON TX ethdev pmd is exposed as a vdev device which consists of a set
+The OCTEON TX ethdev PMD is exposed as a vdev device which consists of a set
 of PKI and PKO PCIe VF devices. On EAL initialization,
 PKI/PKO PCIe VF devices will be probed and then the vdev device can be created
 from the application code, or from the EAL command line based on
@@ -126,7 +126,7 @@ the number of interesting ports with ``nr_ports`` argument.
 
 Dependency
 ~~~~~~~~~~
-``eth_octeontx`` pmd is depend on ``event_octeontx`` eventdev device and
+``eth_octeontx`` PMD is depend on ``event_octeontx`` eventdev device and
 ``octeontx_fpavf`` external mempool handler.
 
 Example:
@@ -157,7 +157,7 @@ Maximum packet length
 ~~~~~~~~~~~~~~~~~~~~~
 
 The OCTEON TX SoC family NICs support a maximum of a 32K jumbo frame. The value
-is fixed and cannot be changed. So, even when the ``rxmode.max_rx_pkt_len``
+is fixed and cannot be changed. So, even when the ``rxmode.mtu``
 member of ``struct rte_eth_conf`` is set to a value lower than 32k, frames
 up to 32k bytes can still reach the host interface.
 

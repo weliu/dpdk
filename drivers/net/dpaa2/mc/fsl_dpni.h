@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: (BSD-3-Clause OR GPL-2.0)
  *
  * Copyright 2013-2016 Freescale Semiconductor Inc.
- * Copyright 2016-2020 NXP
+ * Copyright 2016-2021 NXP
  *
  */
 #ifndef __FSL_DPNI_H
@@ -20,6 +20,11 @@ struct fsl_mc_io;
 /** General DPNI macros */
 
 /**
+ * Maximum size of a key
+ */
+#define DPNI_MAX_KEY_SIZE		56
+
+/**
  * Maximum number of traffic classes
  */
 #define DPNI_MAX_TC				8
@@ -31,6 +36,10 @@ struct fsl_mc_io;
  * Maximum number of storage-profiles per DPNI
  */
 #define DPNI_MAX_SP				2
+/**
+ * Maximum number of Tx channels per DPNI
+ */
+#define DPNI_MAX_CHANNELS		16
 
 /**
  * All traffic classes considered; see dpni_set_queue()
@@ -88,19 +97,36 @@ struct fsl_mc_io;
  */
 #define DPNI_OPT_OPR_PER_TC				0x000080
 /**
- * All Tx traffic classes will use a single sender (ignore num_queueus for tx)
+ * All Tx traffic classes will use a single sender (ignore num_queues for tx)
  */
 #define DPNI_OPT_SINGLE_SENDER			0x000100
 /**
  * Define a custom number of congestion groups
  */
 #define DPNI_OPT_CUSTOM_CG				0x000200
-
-
+/**
+ * Define a custom number of order point records
+ */
+#define DPNI_OPT_CUSTOM_OPR				0x000400
+/**
+ * Hash key is shared between all traffic classes
+ */
+#define DPNI_OPT_SHARED_HASH_KEY		0x000800
+/**
+ * Flow steering table is shared between all traffic classes
+ */
+#define DPNI_OPT_SHARED_FS				0x001000
 /**
  * Software sequence maximum layout size
  */
 #define DPNI_SW_SEQUENCE_LAYOUT_SIZE 33
+
+/**
+ * Build a parameter from dpni channel and trafiic class. This parameter
+ * will be used to configure / query information from dpni objects created
+ * to support multiple channels.
+ */
+#define DPNI_BUILD_PARAM(channel, tc_id)	(((channel) << 8) | (tc_id))
 
 int dpni_open(struct fsl_mc_io *mc_io,
 	      uint32_t cmd_flags,
@@ -172,6 +198,8 @@ int dpni_close(struct fsl_mc_io *mc_io,
  *		field is ignored if the DPNI has a single TC. Otherwise,
  *		a value of 0 defaults to 64. Maximum supported value
  *		is 64.
+ * @num_channels: Number of egress channels used by this dpni object. If
+ *		set to zero the dpni object will use a single CEETM channel.
  */
 struct dpni_cfg {
 	uint32_t options;
@@ -183,6 +211,9 @@ struct dpni_cfg {
 	uint8_t  num_rx_tcs;
 	uint8_t  qos_entries;
 	uint8_t  num_cgs;
+	uint16_t num_opr;
+	uint8_t  dist_key_size;
+	uint8_t  num_channels;
 };
 
 int dpni_create(struct fsl_mc_io *mc_io,
@@ -341,10 +372,12 @@ struct dpni_attr {
 	uint8_t  vlan_filter_entries;
 	uint8_t  qos_entries;
 	uint16_t fs_entries;
+	uint16_t num_opr;
 	uint8_t  qos_key_size;
 	uint8_t  fs_key_size;
 	uint16_t wriop_version;
 	uint8_t  num_cgs;
+	uint8_t  num_channels;
 };
 
 int dpni_get_attributes(struct fsl_mc_io *mc_io,
@@ -366,28 +399,45 @@ int dpni_get_attributes(struct fsl_mc_io *mc_io,
 /**
  * Extract out of frame header error
  */
-#define DPNI_ERROR_EOFHE	0x00020000
+#define DPNI_ERROR_MS			0x40000000
+#define DPNI_ERROR_PTP			0x08000000
+/* Ethernet multicast frame */
+#define DPNI_ERROR_MC			0x04000000
+/* Ethernet broadcast frame */
+#define DPNI_ERROR_BC			0x02000000
+#define DPNI_ERROR_KSE			0x00040000
+#define DPNI_ERROR_EOFHE		0x00020000
+#define DPNI_ERROR_MNLE			0x00010000
+#define DPNI_ERROR_TIDE			0x00008000
+#define DPNI_ERROR_PIEE			0x00004000
 /**
  * Frame length error
  */
-#define DPNI_ERROR_FLE		0x00002000
+#define DPNI_ERROR_FLE			0x00002000
 /**
  * Frame physical error
  */
-#define DPNI_ERROR_FPE		0x00001000
+#define DPNI_ERROR_FPE			0x00001000
+#define DPNI_ERROR_PTE			0x00000080
+#define DPNI_ERROR_ISP			0x00000040
 /**
  * Parsing header error
  */
-#define DPNI_ERROR_PHE		0x00000020
-/**
- * Parser L3 checksum error
- */
-#define DPNI_ERROR_L3CE		0x00000004
-/**
- * Parser L3 checksum error
- */
-#define DPNI_ERROR_L4CE		0x00000001
+#define DPNI_ERROR_PHE			0x00000020
 
+#define DPNI_ERROR_BLE			0x00000010
+/**
+ * Parser L3 checksum error
+ */
+#define DPNI_ERROR_L3CV			0x00000008
+
+#define DPNI_ERROR_L3CE			0x00000004
+/**
+ * Parser L4 checksum error
+ */
+#define DPNI_ERROR_L4CV			0x00000002
+
+#define DPNI_ERROR_L4CE			0x00000001
 /**
  * enum dpni_error_action - Defines DPNI behavior for errors
  * @DPNI_ERROR_ACTION_DISCARD: Discard the frame
@@ -455,6 +505,10 @@ int dpni_set_errors_behavior(struct fsl_mc_io *mc_io,
  * Select to modify the sw-opaque value setting
  */
 #define DPNI_BUF_LAYOUT_OPT_SW_OPAQUE		0x00000080
+/**
+ * Select to disable Scatter Gather and use single buffer
+ */
+#define DPNI_BUF_LAYOUT_OPT_NO_SG		0x00000100
 
 /**
  * struct dpni_buffer_layout - Structure representing DPNI buffer layout
@@ -579,7 +633,7 @@ int dpni_get_tx_data_offset(struct fsl_mc_io *mc_io,
  * @page_3.ceetm_reject_bytes: Cumulative count of the number of bytes in all
  *	frames whose enqueue was rejected
  * @page_3.ceetm_reject_frames: Cumulative count of all frame enqueues rejected
- * @page_4: congestion point drops for seleted TC
+ * @page_4: congestion point drops for selected TC
  * @page_4.cgr_reject_frames: number of rejected frames due to congestion point
  * @page_4.cgr_reject_bytes: number of rejected bytes due to congestion point
  * @page_5: policer statistics per TC
@@ -708,6 +762,11 @@ int dpni_set_link_cfg(struct fsl_mc_io *mc_io,
 		      uint16_t token,
 		      const struct dpni_link_cfg *cfg);
 
+int dpni_get_link_cfg(struct fsl_mc_io *mc_io,
+		      uint32_t cmd_flags,
+		      uint16_t token,
+		      struct dpni_link_cfg *cfg);
+
 /**
  * struct dpni_link_state - Structure representing DPNI link state
  * @rate:	Rate
@@ -733,7 +792,7 @@ int dpni_get_link_state(struct fsl_mc_io *mc_io,
 
 /**
  * struct dpni_tx_shaping - Structure representing DPNI tx shaping configuration
- * @rate_limit:		Rate in Mbps
+ * @rate_limit:		Rate in Mbits/s
  * @max_burst_size:	Burst size in bytes (up to 64KB)
  */
 struct dpni_tx_shaping_cfg {
@@ -741,12 +800,29 @@ struct dpni_tx_shaping_cfg {
 	uint16_t max_burst_size;
 };
 
+/**
+ * Build the parameter for dpni_set_tx_shaping() call
+ * @oal:		Overhead accounting length. 11bit value added to the size of
+ *			each frame. Used only for LNI shaping. If set to zero, will use default
+ *			value of 24. Ignored if shaping_lni is set to zero.
+ * @shaping_lni:	1 for LNI shaping (configure whole throughput of the dpni object)
+ *			0 for channel shaping (configure shaping for individual channels)
+ *			Set to one only if dpni is connected to a dpmac object.
+ * @channel_id:		Channel to be configured. Ignored shaping_lni is set to 1
+ * @coupled:		Committed and excess rates are coupled
+ */
+#define DPNI_TX_SHAPING_PARAM(oal, shaping_lni, channel_id, coupled)	( \
+		((uint32_t)(((oal) & 0x7ff) << 16)) | \
+		((uint32_t)((channel_id) & 0xff) << 8) | \
+		((uint32_t)(!!shaping_lni) << 1) | \
+		((uint32_t)!!coupled))
+
 int dpni_set_tx_shaping(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
 			const struct dpni_tx_shaping_cfg *tx_cr_shaper,
 			const struct dpni_tx_shaping_cfg *tx_er_shaper,
-			int coupled);
+			uint32_t param);
 
 int dpni_set_max_frame_length(struct fsl_mc_io *mc_io,
 			      uint32_t cmd_flags,
@@ -797,6 +873,11 @@ int dpni_get_primary_mac_addr(struct fsl_mc_io *mc_io,
 			      uint32_t cmd_flags,
 			      uint16_t token,
 			      uint8_t mac_addr[6]);
+
+/**
+ * Set mac addr queue action
+ */
+#define DPNI_MAC_SET_QUEUE_ACTION 1
 
 int dpni_add_mac_addr(struct fsl_mc_io *mc_io,
 		      uint32_t cmd_flags,
@@ -875,12 +956,14 @@ struct dpni_tx_schedule_cfg {
 /**
  * struct dpni_tx_priorities_cfg - Structure representing transmission
  *					priorities for DPNI TCs
+ * @channel_idx: channel to perform the configuration
  * @tc_sched:	An array of traffic-classes
  * @prio_group_A: Priority of group A
  * @prio_group_B: Priority of group B
  * @separate_groups: Treat A and B groups as separate
  */
 struct dpni_tx_priorities_cfg {
+	uint8_t channel_idx;
 	struct dpni_tx_schedule_cfg tc_sched[DPNI_MAX_TC];
 	uint32_t prio_group_A;
 	uint32_t prio_group_B;
@@ -1112,14 +1195,14 @@ int dpni_set_early_drop(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
 			enum dpni_queue_type qtype,
-			uint8_t tc_id,
+			uint16_t param,
 			uint64_t early_drop_iova);
 
 int dpni_get_early_drop(struct fsl_mc_io *mc_io,
 			uint32_t cmd_flags,
 			uint16_t token,
 			enum dpni_queue_type qtype,
-			uint8_t tc_id,
+			uint16_t param,
 			uint64_t early_drop_iova);
 
 /**
@@ -1247,15 +1330,15 @@ int dpni_set_congestion_notification(struct fsl_mc_io *mc_io,
 				     uint32_t cmd_flags,
 				     uint16_t token,
 				     enum dpni_queue_type qtype,
-				     uint8_t tc_id,
-			const struct dpni_congestion_notification_cfg *cfg);
+				     uint16_t param,
+				     const struct dpni_congestion_notification_cfg *cfg);
 
 int dpni_get_congestion_notification(struct fsl_mc_io *mc_io,
 				     uint32_t cmd_flags,
 				     uint16_t token,
 				     enum dpni_queue_type qtype,
-				     uint8_t tc_id,
-				struct dpni_congestion_notification_cfg *cfg);
+				     uint16_t param,
+				     struct dpni_congestion_notification_cfg *cfg);
 
 /* DPNI FLC stash options */
 
@@ -1374,7 +1457,7 @@ int dpni_get_tx_confirmation_mode(struct fsl_mc_io *mc_io,
  *		dpkg_prepare_key_cfg()
  * @discard_on_miss: Set to '1' to discard frames in case of no match (miss);
  *		'0' to use the 'default_tc' in such cases
- * @keep_entries: if set to one will not delele existing table entries. This
+ * @keep_entries: if set to one will not delete existing table entries. This
  *		option will work properly only for dpni objects created with
  *		DPNI_OPT_HAS_KEY_MASKING option. All previous QoS entries must
  *		be compatible with new key composition rule.
@@ -1454,16 +1537,40 @@ int dpni_clear_qos_table(struct fsl_mc_io *mc_io,
 #define DPNI_FS_OPT_SET_STASH_CONTROL  0x4
 
 /**
+ * Redirect matching traffic to Rx part of another dpni object. The frame
+ * will be classified according to new qos and flow steering rules from
+ * target dpni object.
+ */
+#define DPNI_FS_OPT_REDIRECT_TO_DPNI_RX		0x08
+
+/**
+ * Redirect matching traffic into Tx queue of another dpni object. The
+ * frame will be transmitted directly
+ */
+#define DPNI_FS_OPT_REDIRECT_TO_DPNI_TX		0x10
+
+/**
  * struct dpni_fs_action_cfg - Action configuration for table look-up
  * @flc: FLC value for traffic matching this rule.  Please check the Frame
  * Descriptor section in the hardware documentation for more information.
  * @flow_id: Identifies the Rx queue used for matching traffic.  Supported
  *     values are in range 0 to num_queue-1.
+ * @redirect_obj_token: token that identifies the object where frame is
+ * redirected when this rule is hit. This parameter is used only when one of the
+ * flags DPNI_FS_OPT_REDIRECT_TO_DPNI_RX or DPNI_FS_OPT_REDIRECT_TO_DPNI_TX is
+ * set.
+ * The token is obtained using dpni_open() API call. The object must stay
+ * open during the operation to ensure the fact that application has access
+ * on it. If the object is destroyed of closed next actions will take place:
+ * - if DPNI_FS_OPT_DISCARD is set the frame will be discarded by current dpni
+ * - if DPNI_FS_OPT_DISCARD is cleared the frame will be enqueued in queue with
+ *   index provided in flow_id parameter.
  * @options: Any combination of DPNI_FS_OPT_ values.
  */
 struct dpni_fs_action_cfg {
 	uint64_t flc;
 	uint16_t flow_id;
+	uint16_t redirect_obj_token;
 	uint16_t options;
 };
 
@@ -1523,7 +1630,7 @@ int dpni_set_queue(struct fsl_mc_io *mc_io,
 		   uint32_t cmd_flags,
 		   uint16_t token,
 		   enum dpni_queue_type qtype,
-		   uint8_t tc,
+		   uint16_t param,
 		   uint8_t index,
 		   uint8_t options,
 		   const struct dpni_queue *queue);
@@ -1532,7 +1639,7 @@ int dpni_get_queue(struct fsl_mc_io *mc_io,
 		   uint32_t cmd_flags,
 		   uint16_t token,
 		   enum dpni_queue_type qtype,
-		   uint8_t tc,
+		   uint16_t param,
 		   uint8_t index,
 		   struct dpni_queue *queue,
 		   struct dpni_queue_id *qid);
@@ -1576,7 +1683,7 @@ int dpni_set_taildrop(struct fsl_mc_io *mc_io,
 		      uint16_t token,
 		      enum dpni_congestion_point cg_point,
 		      enum dpni_queue_type q_type,
-		      uint8_t tc,
+		      uint16_t param,
 		      uint8_t q_index,
 		      struct dpni_taildrop *taildrop);
 
@@ -1595,7 +1702,8 @@ int dpni_set_opr(struct fsl_mc_io *mc_io,
 		 uint8_t tc,
 		 uint8_t index,
 		 uint8_t options,
-		 struct opr_cfg *cfg);
+		 struct opr_cfg *cfg,
+		 uint8_t opr_id);
 
 int dpni_get_opr(struct fsl_mc_io *mc_io,
 		 uint32_t cmd_flags,
@@ -1603,64 +1711,9 @@ int dpni_get_opr(struct fsl_mc_io *mc_io,
 		 uint8_t tc,
 		 uint8_t index,
 		 struct opr_cfg *cfg,
-		 struct opr_qry *qry);
-
-/**
- * When used for queue_idx in function dpni_set_rx_dist_default_queue will
- * signal to dpni to drop all unclassified frames
- */
-#define DPNI_FS_MISS_DROP		((uint16_t)-1)
-
-/**
- * struct dpni_rx_dist_cfg - distribution configuration
- * @dist_size:	distribution size; supported values: 1,2,3,4,6,7,8,
- *		12,14,16,24,28,32,48,56,64,96,112,128,192,224,256,384,448,
- *		512,768,896,1024
- * @key_cfg_iova: I/O virtual address of 256 bytes DMA-able memory filled with
- *		the extractions to be used for the distribution key by calling
- *		dpkg_prepare_key_cfg() relevant only when enable!=0 otherwise
- *		it can be '0'
- * @enable: enable/disable the distribution.
- * @tc: TC id for which distribution is set
- * @fs_miss_flow_id: when packet misses all rules from flow steering table and
- *		hash is disabled it will be put into this queue id; use
- *		DPNI_FS_MISS_DROP to drop frames. The value of this field is
- *		used only when flow steering distribution is enabled and hash
- *		distribution is disabled
- */
-struct dpni_rx_dist_cfg {
-	uint16_t dist_size;
-	uint64_t key_cfg_iova;
-	uint8_t enable;
-	uint8_t tc;
-	uint16_t fs_miss_flow_id;
-};
-
-int dpni_set_rx_fs_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
-		uint16_t token, const struct dpni_rx_dist_cfg *cfg);
-
-int dpni_set_rx_hash_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
-		uint16_t token, const struct dpni_rx_dist_cfg *cfg);
-
-int dpni_add_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
-		uint16_t token, uint16_t tpid);
-
-int dpni_remove_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
-		uint16_t token, uint16_t tpid);
-
-/**
- * struct dpni_custom_tpid_cfg - custom TPID configuration. Contains custom TPID
- *	values used in current dpni object to detect 802.1q frames.
- *	@tpid1: first tag. Not used if zero.
- *	@tpid2: second tag. Not used if zero.
- */
-struct dpni_custom_tpid_cfg {
-	uint16_t tpid1;
-	uint16_t tpid2;
-};
-
-int dpni_get_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
-		uint16_t token, struct dpni_custom_tpid_cfg *tpid);
+		 struct opr_qry *qry,
+		 uint8_t flags,
+		 uint8_t opr_id);
 
 /**
  * enum dpni_soft_sequence_dest - Enumeration of WRIOP software sequence
@@ -1727,7 +1780,7 @@ int dpni_load_sw_sequence(struct fsl_mc_io *mc_io,
 		  struct dpni_load_ss_cfg *cfg);
 
 /**
- * dpni_eanble_sw_sequence() - Enables a software sequence in the parser
+ * dpni_enable_sw_sequence() - Enables a software sequence in the parser
  *				profile
  * corresponding to the ingress or egress of the DPNI.
  * @mc_io:	Pointer to MC portal's I/O object
@@ -1779,14 +1832,114 @@ int dpni_get_sw_sequence_layout(struct fsl_mc_io *mc_io,
 
 /**
  * dpni_extract_sw_sequence_layout() - extract the software sequence layout
- * @layout:		software sequence layout
- * @sw_sequence_layout_buf:	Zeroed 264 bytes of memory before mapping it
- *				to DMA
+ * @layout:	software sequence layout
+ * @sw_sequence_layout_buf:Zeroed 264 bytes of memory before mapping it to DMA
  *
  * This function has to be called after dpni_get_sw_sequence_layout
- *
  */
 void dpni_extract_sw_sequence_layout(struct dpni_sw_sequence_layout *layout,
 				     const uint8_t *sw_sequence_layout_buf);
+
+/**
+ * struct dpni_ptp_cfg - configure single step PTP (IEEE 1588)
+ *	@en: enable single step PTP. When enabled the PTPv1 functionality will
+ *		not work. If the field is zero, offset and ch_update parameters
+ *		will be ignored
+ *	@offset: start offset from the beginning of the frame where timestamp
+ *		field is found. The offset must respect all MAC headers, VLAN
+ *	tags and other protocol headers
+ *	@ch_update: when set UDP checksum will be updated inside packet
+ *	@peer_delay: For peer-to-peer transparent clocks add this value to the
+ *		correction field in addition to the transient time update. The
+ *		value expresses nanoseconds.
+ */
+struct dpni_single_step_cfg {
+	uint8_t en;
+	uint8_t ch_update;
+	uint16_t offset;
+	uint32_t peer_delay;
+};
+
+int dpni_set_single_step_cfg(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, struct dpni_single_step_cfg *ptp_cfg);
+
+int dpni_get_single_step_cfg(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, struct dpni_single_step_cfg *ptp_cfg);
+
+/**
+ * loopback_en field is valid when calling function dpni_set_port_cfg
+ */
+#define DPNI_PORT_CFG_LOOPBACK		0x01
+
+/**
+ * struct dpni_port_cfg - custom configuration for dpni physical port
+ *	@loopback_en: port loopback enabled
+ */
+struct dpni_port_cfg {
+	int loopback_en;
+};
+
+int dpni_set_port_cfg(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, uint32_t flags, struct dpni_port_cfg *port_cfg);
+
+int dpni_get_port_cfg(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, struct dpni_port_cfg *port_cfg);
+
+/**
+ * When used for queue_idx in function dpni_set_rx_dist_default_queue will
+ * signal to dpni to drop all unclassified frames
+ */
+#define DPNI_FS_MISS_DROP		((uint16_t)-1)
+
+/**
+ * struct dpni_rx_dist_cfg - distribution configuration
+ * @dist_size:	distribution size; supported values: 1,2,3,4,6,7,8,
+ *		12,14,16,24,28,32,48,56,64,96,112,128,192,224,256,384,448,
+ *		512,768,896,1024
+ * @key_cfg_iova: I/O virtual address of 256 bytes DMA-able memory filled with
+ *		the extractions to be used for the distribution key by calling
+ *		dpkg_prepare_key_cfg() relevant only when enable!=0 otherwise
+ *		it can be '0'
+ * @enable: enable/disable the distribution.
+ * @tc: TC id for which distribution is set
+ * @fs_miss_flow_id: when packet misses all rules from flow steering table and
+ *		hash is disabled it will be put into this queue id; use
+ *		DPNI_FS_MISS_DROP to drop frames. The value of this field is
+ *		used only when flow steering distribution is enabled and hash
+ *		distribution is disabled
+ */
+struct dpni_rx_dist_cfg {
+	uint16_t dist_size;
+	uint64_t key_cfg_iova;
+	uint8_t enable;
+	uint8_t tc;
+	uint16_t fs_miss_flow_id;
+};
+
+int dpni_set_rx_fs_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, const struct dpni_rx_dist_cfg *cfg);
+
+int dpni_set_rx_hash_dist(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, const struct dpni_rx_dist_cfg *cfg);
+
+int dpni_add_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, uint16_t tpid);
+
+int dpni_remove_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, uint16_t tpid);
+
+/**
+ * struct dpni_custom_tpid_cfg - custom TPID configuration. Contains custom TPID
+ *	values used in current dpni object to detect 802.1q frames.
+ *	@tpid1: first tag. Not used if zero.
+ *	@tpid2: second tag. Not used if zero.
+ */
+struct dpni_custom_tpid_cfg {
+	uint16_t tpid1;
+	uint16_t tpid2;
+};
+
+int dpni_get_custom_tpid(struct fsl_mc_io *mc_io, uint32_t cmd_flags,
+		uint16_t token, struct dpni_custom_tpid_cfg *tpid);
 
 #endif /* __FSL_DPNI_H */

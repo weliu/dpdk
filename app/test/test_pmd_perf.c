@@ -10,7 +10,6 @@
 #include <rte_cycles.h>
 #include <rte_ethdev.h>
 #include <rte_byteorder.h>
-#include <rte_atomic.h>
 #include <rte_malloc.h>
 #include "packet_burst_generator.h"
 #include "test.h"
@@ -19,8 +18,8 @@
 #define NB_SOCKETS                      (2)
 #define MEMPOOL_CACHE_SIZE 250
 #define MAX_PKT_BURST                   (32)
-#define RTE_TEST_RX_DESC_DEFAULT        (1024)
-#define RTE_TEST_TX_DESC_DEFAULT        (1024)
+#define RX_DESC_DEFAULT        (1024)
+#define TX_DESC_DEFAULT        (1024)
 #define RTE_PORT_ALL            (~(uint16_t)0x0)
 
 /* how long test would take at full line rate */
@@ -62,12 +61,10 @@ static struct rte_ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode = ETH_MQ_RX_NONE,
-		.max_rx_pkt_len = RTE_ETHER_MAX_LEN,
-		.split_hdr_size = 0,
+		.mq_mode = RTE_ETH_MQ_RX_NONE,
 	},
 	.txmode = {
-		.mq_mode = ETH_MQ_TX_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 	.lpbk_mode = 1,  /* enable loopback */
 };
@@ -156,7 +153,7 @@ check_all_ports_link_status(uint16_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == ETH_LINK_DOWN) {
+			if (link.link_status == RTE_ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -298,6 +295,7 @@ reset_count(void)
 	idle = 0;
 }
 
+#ifndef RTE_EXEC_ENV_WINDOWS
 static void
 stats_display(uint16_t port_id)
 {
@@ -327,6 +325,7 @@ signal_handler(int signum)
 	if (signum == SIGUSR2)
 		stats_display(0);
 }
+#endif
 
 struct rte_mbuf **tx_burst;
 
@@ -456,6 +455,7 @@ main_loop(__rte_unused void *args)
 #define PACKET_SIZE 64
 #define FRAME_GAP 12
 #define MAC_PREAMBLE 8
+#define MAX_RETRY_COUNT 5
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	unsigned lcore_id;
 	unsigned i, portid, nb_rx = 0, nb_tx = 0;
@@ -463,6 +463,8 @@ main_loop(__rte_unused void *args)
 	int pkt_per_port;
 	uint64_t diff_tsc;
 	uint64_t packets_per_second, total_packets;
+	int retry_cnt = 0;
+	int free_pkt = 0;
 
 	lcore_id = rte_lcore_id();
 	conf = &lcore_conf[lcore_id];
@@ -480,10 +482,19 @@ main_loop(__rte_unused void *args)
 			nb_tx = RTE_MIN(MAX_PKT_BURST, num);
 			nb_tx = rte_eth_tx_burst(portid, 0,
 						&tx_burst[idx], nb_tx);
+			if (nb_tx == 0)
+				retry_cnt++;
 			num -= nb_tx;
 			idx += nb_tx;
+			if (retry_cnt == MAX_RETRY_COUNT) {
+				retry_cnt = 0;
+				break;
+			}
 		}
 	}
+	for (free_pkt = idx; free_pkt < (MAX_TRAFFIC_BURST * conf->nb_ports);
+			free_pkt++)
+		rte_pktmbuf_free(tx_burst[free_pkt]);
 	printf("Total packets inject to prime ports = %u\n", idx);
 
 	packets_per_second = (link_mbps * 1000 * 1000) /
@@ -526,7 +537,7 @@ main_loop(__rte_unused void *args)
 	return 0;
 }
 
-static rte_atomic64_t start;
+static uint64_t start;
 
 static inline int
 poll_burst(void *args)
@@ -564,8 +575,7 @@ poll_burst(void *args)
 		num[portid] = pkt_per_port;
 	}
 
-	while (!rte_atomic64_read(&start))
-		;
+	rte_wait_until_equal_64(&start, 1, __ATOMIC_ACQUIRE);
 
 	cur_tsc = rte_rdtsc();
 	while (total) {
@@ -617,15 +627,18 @@ exec_burst(uint32_t flags, int lcore)
 	pkt_per_port = MAX_TRAFFIC_BURST;
 	num = pkt_per_port * conf->nb_ports;
 
-	rte_atomic64_init(&start);
+	/* only when polling first */
+	if (flags == SC_BURST_POLL_FIRST)
+		__atomic_store_n(&start, 1, __ATOMIC_RELAXED);
+	else
+		__atomic_store_n(&start, 0, __ATOMIC_RELAXED);
 
-	/* start polling thread, but not actually poll yet */
+	/* start polling thread
+	 * if in POLL_FIRST mode, poll once launched;
+	 * otherwise, not actually poll yet
+	 */
 	rte_eal_remote_launch(poll_burst,
 			      (void *)&pkt_per_port, lcore);
-
-	/* Only when polling first */
-	if (flags == SC_BURST_POLL_FIRST)
-		rte_atomic64_set(&start, 1);
 
 	/* start xmit */
 	i = 0;
@@ -638,11 +651,11 @@ exec_burst(uint32_t flags, int lcore)
 		i = (i >= conf->nb_ports - 1) ? 0 : (i + 1);
 	}
 
-	sleep(5);
+	rte_delay_us(5 * US_PER_S);
 
 	/* only when polling second  */
 	if (flags == SC_BURST_XMIT_FIRST)
-		rte_atomic64_set(&start, 1);
+		__atomic_store_n(&start, 1, __ATOMIC_RELEASE);
 
 	/* wait for polling finished */
 	diff_tsc = rte_eal_wait_lcore(lcore);
@@ -669,8 +682,10 @@ test_pmd_perf(void)
 
 	printf("Start PMD RXTX cycles cost test.\n");
 
+#ifndef RTE_EXEC_ENV_WINDOWS
 	signal(SIGUSR1, signal_handler);
 	signal(SIGUSR2, signal_handler);
+#endif
 
 	nb_ports = rte_eth_dev_count_avail();
 	if (nb_ports < NB_ETHPORTS_USED) {
@@ -687,8 +702,8 @@ test_pmd_perf(void)
 	init_mbufpool(NB_MBUF);
 
 	if (sc_flag == SC_CONTINUOUS) {
-		nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
-		nb_txd = RTE_TEST_TX_DESC_DEFAULT;
+		nb_rxd = RX_DESC_DEFAULT;
+		nb_txd = TX_DESC_DEFAULT;
 	}
 	printf("CONFIG RXD=%d TXD=%d\n", nb_rxd, nb_txd);
 
@@ -753,7 +768,7 @@ test_pmd_perf(void)
 				"rte_eth_dev_start: err=%d, port=%d\n",
 				ret, portid);
 
-		/* always eanble promiscuous */
+		/* always enable promiscuous */
 		ret = rte_eth_promiscuous_enable(portid);
 		if (ret != 0)
 			rte_exit(EXIT_FAILURE,
@@ -823,7 +838,7 @@ test_set_rxtx_conf(cmdline_fixed_string_t mode)
 		/* bulk alloc rx, full-featured tx */
 		tx_conf.tx_rs_thresh = 32;
 		tx_conf.tx_free_thresh = 32;
-		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
 		return 0;
 	} else if (!strcmp(mode, "hybrid")) {
 		/* bulk alloc rx, vector tx
@@ -832,13 +847,13 @@ test_set_rxtx_conf(cmdline_fixed_string_t mode)
 		 */
 		tx_conf.tx_rs_thresh = 32;
 		tx_conf.tx_free_thresh = 32;
-		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_CHECKSUM;
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_CHECKSUM;
 		return 0;
 	} else if (!strcmp(mode, "full")) {
 		/* full feature rx,tx pair */
 		tx_conf.tx_rs_thresh = 32;
 		tx_conf.tx_free_thresh = 32;
-		port_conf.rxmode.offloads |= DEV_RX_OFFLOAD_SCATTER;
+		port_conf.rxmode.offloads |= RTE_ETH_RX_OFFLOAD_SCATTER;
 		return 0;
 	}
 

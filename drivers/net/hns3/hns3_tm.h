@@ -1,13 +1,25 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2020-2020 Hisilicon Limited.
+ * Copyright(c) 2020-2021 HiSilicon Limited.
  */
 
-#ifndef _HNS3_TM_H_
-#define _HNS3_TM_H_
+#ifndef HNS3_TM_H
+#define HNS3_TM_H
 
 #include <stdint.h>
 #include <rte_tailq.h>
 #include <rte_tm_driver.h>
+
+struct hns3_port_limit_rate_cmd {
+	uint32_t speed;  /* Unit Mbps */
+	uint32_t rsvd[5];
+};
+
+struct hns3_tc_limit_rate_cmd {
+	uint32_t speed;  /* Unit Mbps */
+	uint8_t tc_id;
+	uint8_t rsvd[3];
+	uint32_t rsvd1[4];
+};
 
 enum hns3_tm_node_type {
 	HNS3_TM_NODE_TYPE_PORT,
@@ -93,6 +105,8 @@ hns3_tm_calc_node_tc_no(struct hns3_tm_conf *conf, uint32_t node_id)
 		return 0;
 }
 
+struct hns3_hw;
+
 void hns3_tm_conf_init(struct rte_eth_dev *dev);
 void hns3_tm_conf_uninit(struct rte_eth_dev *dev);
 int hns3_tm_ops_get(struct rte_eth_dev *dev __rte_unused, void *arg);
@@ -100,4 +114,4 @@ void hns3_tm_dev_start_proc(struct hns3_hw *hw);
 void hns3_tm_dev_stop_proc(struct hns3_hw *hw);
 int hns3_tm_conf_update(struct hns3_hw *hw);
 
-#endif /* _HNS3_TM_H */
+#endif /* HNS3_TM_H */

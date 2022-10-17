@@ -6,7 +6,7 @@
 
 #include <rte_common.h>
 #include <rte_log.h>
-#include <rte_dev.h>
+#include <dev_driver.h>
 #include <rte_malloc.h>
 #include <rte_mempool.h>
 #include <rte_byteorder.h>
@@ -14,19 +14,20 @@
 #include <rte_branch_prediction.h>
 #include <rte_hexdump.h>
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #ifdef RTE_BBDEV_OFFLOAD_COST
 #include <rte_cycles.h>
 #endif
 
 #include <rte_bbdev.h>
 #include <rte_bbdev_pmd.h>
-#include "rte_acc100_pmd.h"
+#include "acc100_pmd.h"
+#include "acc101_pmd.h"
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
-RTE_LOG_REGISTER(acc100_logtype, pmd.bb.acc100, DEBUG);
+RTE_LOG_REGISTER_DEFAULT(acc100_logtype, DEBUG);
 #else
-RTE_LOG_REGISTER(acc100_logtype, pmd.bb.acc100, NOTICE);
+RTE_LOG_REGISTER_DEFAULT(acc100_logtype, NOTICE);
 #endif
 
 /* Write to MMIO register address */
@@ -141,8 +142,8 @@ aqDepth(int qg_idx, struct rte_acc100_conf *acc100_conf)
 	int acc_enum = accFromQgid(qg_idx, acc100_conf);
 	qtopFromAcc(&q_top, acc_enum, acc100_conf);
 	if (unlikely(q_top == NULL))
-		return 0;
-	return q_top->aq_depth_log2;
+		return 1;
+	return RTE_MAX(1, q_top->aq_depth_log2);
 }
 
 /* Return the AQ depth for a Queue Group Index */
@@ -720,8 +721,8 @@ acc100_intr_enable(struct rte_bbdev *dev)
 	struct acc100_device *d = dev->data->dev_private;
 
 	/* Only MSI are currently supported */
-	if (dev->intr_handle->type == RTE_INTR_HANDLE_VFIO_MSI ||
-			dev->intr_handle->type == RTE_INTR_HANDLE_UIO) {
+	if (rte_intr_type_get(dev->intr_handle) == RTE_INTR_HANDLE_VFIO_MSI ||
+			rte_intr_type_get(dev->intr_handle) == RTE_INTR_HANDLE_UIO) {
 
 		ret = allocate_info_ring(dev);
 		if (ret < 0) {
@@ -966,6 +967,7 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 		struct rte_bbdev_driver_info *dev_info)
 {
 	struct acc100_device *d = dev->data->dev_private;
+	int i;
 
 	static const struct rte_bbdev_op_cap bbdev_capabilities[] = {
 		{
@@ -980,6 +982,7 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 					RTE_BBDEV_TURBO_NEG_LLR_1_BIT_IN |
 					RTE_BBDEV_TURBO_MAP_DEC |
 					RTE_BBDEV_TURBO_DEC_TB_CRC_24B_KEEP |
+					RTE_BBDEV_TURBO_DEC_CRC_24B_DROP |
 					RTE_BBDEV_TURBO_DEC_SCATTER_GATHER,
 				.max_llr_modulus = INT8_MAX,
 				.num_buffers_src =
@@ -1059,20 +1062,25 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 
 	/* Read and save the populated config from ACC100 registers */
 	fetch_acc100_config(dev);
+	dev_info->device_status = RTE_BBDEV_DEV_NOT_SUPPORTED;
 
-	/* This isn't ideal because it reports the maximum number of queues but
-	 * does not provide info on how many can be uplink/downlink or different
-	 * priorities
-	 */
-	dev_info->max_num_queues =
-			d->acc100_conf.q_dl_5g.num_aqs_per_groups *
-			d->acc100_conf.q_dl_5g.num_qgroups +
-			d->acc100_conf.q_ul_5g.num_aqs_per_groups *
-			d->acc100_conf.q_ul_5g.num_qgroups +
-			d->acc100_conf.q_dl_4g.num_aqs_per_groups *
-			d->acc100_conf.q_dl_4g.num_qgroups +
-			d->acc100_conf.q_ul_4g.num_aqs_per_groups *
+	/* Expose number of queues */
+	dev_info->num_queues[RTE_BBDEV_OP_NONE] = 0;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_DEC] = d->acc100_conf.q_ul_4g.num_aqs_per_groups *
 			d->acc100_conf.q_ul_4g.num_qgroups;
+	dev_info->num_queues[RTE_BBDEV_OP_TURBO_ENC] = d->acc100_conf.q_dl_4g.num_aqs_per_groups *
+			d->acc100_conf.q_dl_4g.num_qgroups;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_DEC] = d->acc100_conf.q_ul_5g.num_aqs_per_groups *
+			d->acc100_conf.q_ul_5g.num_qgroups;
+	dev_info->num_queues[RTE_BBDEV_OP_LDPC_ENC] = d->acc100_conf.q_dl_5g.num_aqs_per_groups *
+			d->acc100_conf.q_dl_5g.num_qgroups;
+	dev_info->queue_priority[RTE_BBDEV_OP_TURBO_DEC] = d->acc100_conf.q_ul_4g.num_qgroups;
+	dev_info->queue_priority[RTE_BBDEV_OP_TURBO_ENC] = d->acc100_conf.q_dl_4g.num_qgroups;
+	dev_info->queue_priority[RTE_BBDEV_OP_LDPC_DEC] = d->acc100_conf.q_ul_5g.num_qgroups;
+	dev_info->queue_priority[RTE_BBDEV_OP_LDPC_ENC] = d->acc100_conf.q_dl_5g.num_qgroups;
+	dev_info->max_num_queues = 0;
+	for (i = RTE_BBDEV_OP_TURBO_DEC; i <= RTE_BBDEV_OP_LDPC_ENC; i++)
+		dev_info->max_num_queues += dev_info->num_queues[i];
 	dev_info->queue_size_lim = ACC100_MAX_QUEUE_DEPTH;
 	dev_info->hardware_accelerated = true;
 	dev_info->max_dl_queue_priority =
@@ -1088,6 +1096,7 @@ acc100_dev_info_get(struct rte_bbdev *dev,
 #else
 	dev_info->harq_buffer_size = 0;
 #endif
+	dev_info->data_endianness = RTE_LITTLE_ENDIAN;
 	acc100_check_ir(d);
 }
 
@@ -1096,8 +1105,8 @@ acc100_queue_intr_enable(struct rte_bbdev *dev, uint16_t queue_id)
 {
 	struct acc100_queue *q = dev->data->queues[queue_id].queue_private;
 
-	if (dev->intr_handle->type != RTE_INTR_HANDLE_VFIO_MSI &&
-			dev->intr_handle->type != RTE_INTR_HANDLE_UIO)
+	if (rte_intr_type_get(dev->intr_handle) != RTE_INTR_HANDLE_VFIO_MSI &&
+			rte_intr_type_get(dev->intr_handle) != RTE_INTR_HANDLE_UIO)
 		return -ENOTSUP;
 
 	q->irq_enable = 1;
@@ -1109,8 +1118,8 @@ acc100_queue_intr_disable(struct rte_bbdev *dev, uint16_t queue_id)
 {
 	struct acc100_queue *q = dev->data->queues[queue_id].queue_private;
 
-	if (dev->intr_handle->type != RTE_INTR_HANDLE_VFIO_MSI &&
-			dev->intr_handle->type != RTE_INTR_HANDLE_UIO)
+	if (rte_intr_type_get(dev->intr_handle) != RTE_INTR_HANDLE_VFIO_MSI &&
+			rte_intr_type_get(dev->intr_handle) != RTE_INTR_HANDLE_UIO)
 		return -ENOTSUP;
 
 	q->irq_enable = 0;
@@ -1131,7 +1140,10 @@ static const struct rte_bbdev_ops acc100_bbdev_ops = {
 /* ACC100 PCI PF address map */
 static struct rte_pci_id pci_id_acc100_pf_map[] = {
 	{
-		RTE_PCI_DEVICE(RTE_ACC100_VENDOR_ID, RTE_ACC100_PF_DEVICE_ID)
+		RTE_PCI_DEVICE(ACC100_VENDOR_ID, ACC100_PF_DEVICE_ID),
+	},
+	{
+		RTE_PCI_DEVICE(ACC101_VENDOR_ID, ACC101_PF_DEVICE_ID),
 	},
 	{.device_id = 0},
 };
@@ -1139,7 +1151,10 @@ static struct rte_pci_id pci_id_acc100_pf_map[] = {
 /* ACC100 PCI VF address map */
 static struct rte_pci_id pci_id_acc100_vf_map[] = {
 	{
-		RTE_PCI_DEVICE(RTE_ACC100_VENDOR_ID, RTE_ACC100_VF_DEVICE_ID)
+		RTE_PCI_DEVICE(ACC100_VENDOR_ID, ACC100_VF_DEVICE_ID),
+	},
+	{
+		RTE_PCI_DEVICE(ACC101_VENDOR_ID, ACC101_VF_DEVICE_ID),
 	},
 	{.device_id = 0},
 };
@@ -1168,7 +1183,7 @@ static inline void
 acc100_fcw_te_fill(const struct rte_bbdev_enc_op *op, struct acc100_fcw_te *fcw)
 {
 	fcw->code_block_mode = op->turbo_enc.code_block_mode;
-	if (fcw->code_block_mode == 0) { /* For TB mode */
+	if (fcw->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		fcw->k_neg = op->turbo_enc.tb_params.k_neg;
 		fcw->k_pos = op->turbo_enc.tb_params.k_pos;
 		fcw->c_neg = op->turbo_enc.tb_params.c_neg;
@@ -1234,6 +1249,8 @@ get_k0(uint16_t n_cb, uint16_t z_c, uint8_t bg, uint8_t rv_index)
 			return (bg == 1 ? ACC100_K0_3_1 : ACC100_K0_3_2) * z_c;
 	}
 	/* LBRM case - includes a division by N */
+	if (unlikely(z_c == 0))
+		return 0;
 	if (rv_index == 1)
 		return (((bg == 1 ? ACC100_K0_1_1 : ACC100_K0_1_2) * n_cb)
 				/ n) * z_c;
@@ -1271,7 +1288,7 @@ acc100_fcw_td_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_td *fcw)
 {
 	/* Note : Early termination is always enabled for 4GUL */
 	fcw->fcw_ver = 1;
-	if (op->turbo_dec.code_block_mode == 0)
+	if (op->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		fcw->k_pos = op->turbo_dec.tb_params.k_pos;
 	else
 		fcw->k_pos = op->turbo_dec.cb_params.k;
@@ -1284,9 +1301,24 @@ acc100_fcw_td_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_td *fcw)
 			RTE_BBDEV_TURBO_HALF_ITERATION_EVEN);
 }
 
+#ifdef RTE_LIBRTE_BBDEV_DEBUG
+
+static inline bool
+is_acc100(struct acc100_queue *q)
+{
+	return (q->d->device_variant == ACC100_VARIANT);
+}
+
+static inline bool
+validate_op_required(struct acc100_queue *q)
+{
+	return is_acc100(q);
+}
+#endif
+
 /* Fill in a frame control word for LDPC decoding. */
 static inline void
-acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
+acc100_fcw_ld_fill(struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 		union acc100_harq_layout_data *harq_layout)
 {
 	uint16_t harq_out_length, harq_in_length, ncb_p, k0_p, parity_offset;
@@ -1301,7 +1333,7 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 	fcw->ncb = op->ldpc_dec.n_cb;
 	fcw->k0 = get_k0(fcw->ncb, fcw->Zc, op->ldpc_dec.basegraph,
 			op->ldpc_dec.rv_index);
-	if (op->ldpc_dec.code_block_mode == 1)
+	if (op->ldpc_dec.code_block_mode == RTE_BBDEV_CODE_BLOCK)
 		fcw->rm_e = op->ldpc_dec.cb_params.e;
 	else
 		fcw->rm_e = (op->ldpc_dec.tb_params.r <
@@ -1410,6 +1442,128 @@ acc100_fcw_ld_fill(const struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
 	}
 }
 
+/* Convert offset to harq index for harq_layout structure */
+static inline uint32_t hq_index(uint32_t offset)
+{
+	return (offset >> ACC100_HARQ_OFFSET_SHIFT) & ACC100_HARQ_OFFSET_MASK;
+}
+
+/* Fill in a frame control word for LDPC decoding for ACC101 */
+static inline void
+acc101_fcw_ld_fill(struct rte_bbdev_dec_op *op, struct acc100_fcw_ld *fcw,
+		union acc100_harq_layout_data *harq_layout)
+{
+	uint16_t harq_out_length, harq_in_length, ncb_p, k0_p, parity_offset;
+	uint32_t harq_index;
+	uint32_t l;
+
+	fcw->qm = op->ldpc_dec.q_m;
+	fcw->nfiller = op->ldpc_dec.n_filler;
+	fcw->BG = (op->ldpc_dec.basegraph - 1);
+	fcw->Zc = op->ldpc_dec.z_c;
+	fcw->ncb = op->ldpc_dec.n_cb;
+	fcw->k0 = get_k0(fcw->ncb, fcw->Zc, op->ldpc_dec.basegraph,
+			op->ldpc_dec.rv_index);
+	if (op->ldpc_dec.code_block_mode == RTE_BBDEV_CODE_BLOCK)
+		fcw->rm_e = op->ldpc_dec.cb_params.e;
+	else
+		fcw->rm_e = (op->ldpc_dec.tb_params.r <
+				op->ldpc_dec.tb_params.cab) ?
+						op->ldpc_dec.tb_params.ea :
+						op->ldpc_dec.tb_params.eb;
+
+	if (unlikely(check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE) &&
+			(op->ldpc_dec.harq_combined_input.length == 0))) {
+		rte_bbdev_log(WARNING, "Null HARQ input size provided");
+		/* Disable HARQ input in that case to carry forward */
+		op->ldpc_dec.op_flags ^= RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE;
+	}
+
+	fcw->hcin_en = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HQ_COMBINE_IN_ENABLE);
+	fcw->hcout_en = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HQ_COMBINE_OUT_ENABLE);
+	fcw->crc_select = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_CRC_TYPE_24B_CHECK);
+	fcw->bypass_dec = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_DECODE_BYPASS);
+	fcw->bypass_intlv = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_DEINTERLEAVER_BYPASS);
+	if (op->ldpc_dec.q_m == 1) {
+		fcw->bypass_intlv = 1;
+		fcw->qm = 2;
+	}
+	fcw->hcin_decomp_mode = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HARQ_6BIT_COMPRESSION);
+	fcw->hcout_comp_mode = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_HARQ_6BIT_COMPRESSION);
+	fcw->llr_pack_mode = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_LLR_COMPRESSION);
+	harq_index = hq_index(op->ldpc_dec.harq_combined_output.offset);
+	if (fcw->hcin_en > 0) {
+		harq_in_length = op->ldpc_dec.harq_combined_input.length;
+		if (fcw->hcin_decomp_mode > 0)
+			harq_in_length = harq_in_length * 8 / 6;
+		harq_in_length = RTE_MIN(harq_in_length, op->ldpc_dec.n_cb
+				- op->ldpc_dec.n_filler);
+		/* Alignment on next 64B - Already enforced from HC output */
+		harq_in_length = RTE_ALIGN_FLOOR(harq_in_length, 64);
+		fcw->hcin_size0 = harq_in_length;
+		fcw->hcin_offset = 0;
+		fcw->hcin_size1 = 0;
+	} else {
+		fcw->hcin_size0 = 0;
+		fcw->hcin_offset = 0;
+		fcw->hcin_size1 = 0;
+	}
+
+	fcw->itmax = op->ldpc_dec.iter_max;
+	fcw->itstop = check_bit(op->ldpc_dec.op_flags,
+			RTE_BBDEV_LDPC_ITERATION_STOP_ENABLE);
+	fcw->synd_precoder = fcw->itstop;
+	/*
+	 * These are all implicitly set
+	 * fcw->synd_post = 0;
+	 * fcw->so_en = 0;
+	 * fcw->so_bypass_rm = 0;
+	 * fcw->so_bypass_intlv = 0;
+	 * fcw->dec_convllr = 0;
+	 * fcw->hcout_convllr = 0;
+	 * fcw->hcout_size1 = 0;
+	 * fcw->so_it = 0;
+	 * fcw->hcout_offset = 0;
+	 * fcw->negstop_th = 0;
+	 * fcw->negstop_it = 0;
+	 * fcw->negstop_en = 0;
+	 * fcw->gain_i = 1;
+	 * fcw->gain_h = 1;
+	 */
+	if (fcw->hcout_en > 0) {
+		parity_offset = (op->ldpc_dec.basegraph == 1 ? 20 : 8)
+			* op->ldpc_dec.z_c - op->ldpc_dec.n_filler;
+		k0_p = (fcw->k0 > parity_offset) ?
+				fcw->k0 - op->ldpc_dec.n_filler : fcw->k0;
+		ncb_p = fcw->ncb - op->ldpc_dec.n_filler;
+		l = RTE_MIN(k0_p + fcw->rm_e, INT16_MAX);
+		harq_out_length = (uint16_t) fcw->hcin_size0;
+		harq_out_length = RTE_MAX(harq_out_length, l);
+		/* Cannot exceed the pruned Ncb circular buffer */
+		harq_out_length = RTE_MIN(harq_out_length, ncb_p);
+		/* Alignment on next 64B */
+		harq_out_length = RTE_ALIGN_CEIL(harq_out_length, 64);
+		fcw->hcout_size0 = harq_out_length;
+		fcw->hcout_size1 = 0;
+		fcw->hcout_offset = 0;
+		harq_layout[harq_index].offset = fcw->hcout_offset;
+		harq_layout[harq_index].size0 = fcw->hcout_size0;
+	} else {
+		fcw->hcout_size0 = 0;
+		fcw->hcout_size1 = 0;
+		fcw->hcout_offset = 0;
+	}
+}
+
 /**
  * Fills descriptor with data pointers of one block type.
  *
@@ -1458,8 +1612,7 @@ acc100_dma_fill_blk_type_in(struct acc100_dma_req_desc *desc,
 	next_triplet++;
 
 	while (cb_len > 0) {
-		if (next_triplet < ACC100_DMA_MAX_NUM_POINTERS &&
-				m->next != NULL) {
+		if (next_triplet < ACC100_DMA_MAX_NUM_POINTERS_IN && m->next != NULL) {
 
 			m = m->next;
 			*seg_total_left = rte_pktmbuf_data_len(m);
@@ -1554,7 +1707,7 @@ acc100_dma_desc_te_fill(struct rte_bbdev_enc_op *op,
 	desc->word3 = 0;
 	desc->numCBs = 1;
 
-	if (op->turbo_enc.code_block_mode == 0) {
+	if (op->turbo_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		ea = op->turbo_enc.tb_params.ea;
 		eb = op->turbo_enc.tb_params.eb;
 		cab = op->turbo_enc.tb_params.cab;
@@ -1695,7 +1848,7 @@ acc100_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 	desc->word3 = 0;
 	desc->numCBs = 1;
 
-	if (op->turbo_dec.code_block_mode == 0) {
+	if (op->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		k = (r < op->turbo_dec.tb_params.c_neg)
 			? op->turbo_dec.tb_params.k_neg
 			: op->turbo_dec.tb_params.k_pos;
@@ -1707,9 +1860,13 @@ acc100_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 		e = op->turbo_dec.cb_params.e;
 	}
 
-	if ((op->turbo_dec.code_block_mode == 0)
-		&& !check_bit(op->turbo_dec.op_flags,
-		RTE_BBDEV_TURBO_DEC_TB_CRC_24B_KEEP))
+	if ((op->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
+			&& !check_bit(op->turbo_dec.op_flags,
+			RTE_BBDEV_TURBO_DEC_TB_CRC_24B_KEEP))
+		crc24_overlap = 24;
+	if ((op->turbo_dec.code_block_mode == RTE_BBDEV_CODE_BLOCK)
+			&& check_bit(op->turbo_dec.op_flags,
+			RTE_BBDEV_TURBO_DEC_CRC_24B_DROP))
 		crc24_overlap = 24;
 
 	/* Calculates circular buffer size.
@@ -1744,7 +1901,8 @@ acc100_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 
 	next_triplet = acc100_dma_fill_blk_type_out(
 			desc, h_output, *h_out_offset,
-			k >> 3, next_triplet, ACC100_DMA_BLKID_OUT_HARD);
+			(k - crc24_overlap) >> 3, next_triplet,
+			ACC100_DMA_BLKID_OUT_HARD);
 	if (unlikely(next_triplet < 0)) {
 		rte_bbdev_log(ERR,
 				"Mismatch between data to process and mbuf data length in bbdev_op: %p",
@@ -1758,6 +1916,10 @@ acc100_dma_desc_td_fill(struct rte_bbdev_dec_op *op,
 
 	/* Soft output */
 	if (check_bit(op->turbo_dec.op_flags, RTE_BBDEV_TURBO_SOFT_OUTPUT)) {
+		if (op->turbo_dec.soft_output.data == 0) {
+			rte_bbdev_log(ERR, "Soft output is not defined");
+			return -1;
+		}
 		if (check_bit(op->turbo_dec.op_flags,
 				RTE_BBDEV_TURBO_EQUALIZER))
 			*s_out_length = e;
@@ -2041,12 +2203,15 @@ acc100_dma_enqueue(struct acc100_queue *q, uint16_t n,
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 /* Validates turbo encoder parameters */
 static inline int
-validate_enc_op(struct rte_bbdev_enc_op *op)
+validate_enc_op(struct rte_bbdev_enc_op *op, struct acc100_queue *q)
 {
 	struct rte_bbdev_op_turbo_enc *turbo_enc = &op->turbo_enc;
 	struct rte_bbdev_op_enc_turbo_cb_params *cb = NULL;
 	struct rte_bbdev_op_enc_turbo_tb_params *tb = NULL;
 	uint16_t kw, kw_neg, kw_pos;
+
+	if (!validate_op_required(q))
+		return 0;
 
 	if (op->mempool == NULL) {
 		rte_bbdev_log(ERR, "Invalid mempool pointer");
@@ -2066,15 +2231,15 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 				turbo_enc->rv_index);
 		return -1;
 	}
-	if (turbo_enc->code_block_mode != 0 &&
-			turbo_enc->code_block_mode != 1) {
+	if (turbo_enc->code_block_mode != RTE_BBDEV_TRANSPORT_BLOCK &&
+			turbo_enc->code_block_mode != RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0 <= value <= 1",
 				turbo_enc->code_block_mode);
 		return -1;
 	}
 
-	if (turbo_enc->code_block_mode == 0) {
+	if (turbo_enc->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &turbo_enc->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
 				|| tb->k_neg > RTE_BBDEV_TURBO_MAX_CB_SIZE)
@@ -2179,9 +2344,12 @@ validate_enc_op(struct rte_bbdev_enc_op *op)
 }
 /* Validates LDPC encoder parameters */
 static inline int
-validate_ldpc_enc_op(struct rte_bbdev_enc_op *op)
+validate_ldpc_enc_op(struct rte_bbdev_enc_op *op, struct acc100_queue *q)
 {
 	struct rte_bbdev_op_ldpc_enc *ldpc_enc = &op->ldpc_enc;
+
+	if (!validate_op_required(q))
+		return 0;
 
 	if (op->mempool == NULL) {
 		rte_bbdev_log(ERR, "Invalid mempool pointer");
@@ -2214,7 +2382,7 @@ validate_ldpc_enc_op(struct rte_bbdev_enc_op *op)
 				ldpc_enc->rv_index);
 		return -1;
 	}
-	if (ldpc_enc->code_block_mode > 1) {
+	if (ldpc_enc->code_block_mode > RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0 <= value <= 1",
 				ldpc_enc->code_block_mode);
@@ -2232,9 +2400,12 @@ validate_ldpc_enc_op(struct rte_bbdev_enc_op *op)
 
 /* Validates LDPC decoder parameters */
 static inline int
-validate_ldpc_dec_op(struct rte_bbdev_dec_op *op)
+validate_ldpc_dec_op(struct rte_bbdev_dec_op *op, struct acc100_queue *q)
 {
 	struct rte_bbdev_op_ldpc_dec *ldpc_dec = &op->ldpc_dec;
+
+	if (!validate_op_required(q))
+		return 0;
 
 	if (op->mempool == NULL) {
 		rte_bbdev_log(ERR, "Invalid mempool pointer");
@@ -2258,7 +2429,7 @@ validate_ldpc_dec_op(struct rte_bbdev_dec_op *op)
 				ldpc_dec->rv_index);
 		return -1;
 	}
-	if (ldpc_dec->code_block_mode > 1) {
+	if (ldpc_dec->code_block_mode > RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0 <= value <= 1",
 				ldpc_dec->code_block_mode);
@@ -2288,7 +2459,7 @@ enqueue_enc_one_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_enc_op(op) == -1) {
+	if (validate_enc_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "Turbo encoder validation failed");
 		return -EINVAL;
 	}
@@ -2342,7 +2513,7 @@ enqueue_ldpc_enc_n_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op **ops,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_ldpc_enc_op(ops[0]) == -1) {
+	if (validate_ldpc_enc_op(ops[0], q) == -1) {
 		rte_bbdev_log(ERR, "LDPC encoder validation failed");
 		return -EINVAL;
 	}
@@ -2404,7 +2575,7 @@ enqueue_ldpc_enc_one_op_cb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_ldpc_enc_op(op) == -1) {
+	if (validate_ldpc_enc_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "LDPC encoder validation failed");
 		return -EINVAL;
 	}
@@ -2461,7 +2632,7 @@ enqueue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_enc_op(op) == -1) {
+	if (validate_enc_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "Turbo encoder validation failed");
 		return -EINVAL;
 	}
@@ -2534,11 +2705,14 @@ enqueue_enc_one_op_tb(struct acc100_queue *q, struct rte_bbdev_enc_op *op,
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 /* Validates turbo decoder parameters */
 static inline int
-validate_dec_op(struct rte_bbdev_dec_op *op)
+validate_dec_op(struct rte_bbdev_dec_op *op, struct acc100_queue *q)
 {
 	struct rte_bbdev_op_turbo_dec *turbo_dec = &op->turbo_dec;
 	struct rte_bbdev_op_dec_turbo_cb_params *cb = NULL;
 	struct rte_bbdev_op_dec_turbo_tb_params *tb = NULL;
+
+	if (!validate_op_required(q))
+		return 0;
 
 	if (op->mempool == NULL) {
 		rte_bbdev_log(ERR, "Invalid mempool pointer");
@@ -2581,15 +2755,15 @@ validate_dec_op(struct rte_bbdev_dec_op *op)
 				turbo_dec->iter_min, turbo_dec->iter_max);
 		return -1;
 	}
-	if (turbo_dec->code_block_mode != 0 &&
-			turbo_dec->code_block_mode != 1) {
+	if (turbo_dec->code_block_mode != RTE_BBDEV_TRANSPORT_BLOCK &&
+			turbo_dec->code_block_mode != RTE_BBDEV_CODE_BLOCK) {
 		rte_bbdev_log(ERR,
 				"code_block_mode (%u) is out of range 0 <= value <= 1",
 				turbo_dec->code_block_mode);
 		return -1;
 	}
 
-	if (turbo_dec->code_block_mode == 0) {
+	if (turbo_dec->code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK) {
 		tb = &turbo_dec->tb_params;
 		if ((tb->k_neg < RTE_BBDEV_TURBO_MIN_CB_SIZE
 				|| tb->k_neg > RTE_BBDEV_TURBO_MAX_CB_SIZE)
@@ -2681,7 +2855,7 @@ enqueue_dec_one_op_cb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_dec_op(op) == -1) {
+	if (validate_dec_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "Turbo decoder validation failed");
 		return -EINVAL;
 	}
@@ -2906,7 +3080,7 @@ enqueue_ldpc_dec_one_op_cb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_ldpc_dec_op(op) == -1) {
+	if (validate_ldpc_dec_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "LDPC decoder validation failed");
 		return -EINVAL;
 	}
@@ -2954,7 +3128,7 @@ enqueue_ldpc_dec_one_op_cb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 		struct acc100_fcw_ld *fcw;
 		uint32_t seg_total_left;
 		fcw = &desc->req.fcw_ld;
-		acc100_fcw_ld_fill(op, fcw, harq_layout);
+		q->d->fcw_ld_fill(op, fcw, harq_layout);
 
 		/* Special handling when overusing mbuf */
 		if (fcw->rm_e < ACC100_MAX_E_MBUF)
@@ -3010,7 +3184,7 @@ enqueue_ldpc_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_ldpc_dec_op(op) == -1) {
+	if (validate_ldpc_dec_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "LDPC decoder validation failed");
 		return -EINVAL;
 	}
@@ -3021,7 +3195,7 @@ enqueue_ldpc_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 	desc = q->ring_addr + desc_idx;
 	uint64_t fcw_offset = (desc_idx << 8) + ACC100_DESC_FCW_OFFSET;
 	union acc100_harq_layout_data *harq_layout = q->d->harq_layout;
-	acc100_fcw_ld_fill(op, &desc->req.fcw_ld, harq_layout);
+	q->d->fcw_ld_fill(op, &desc->req.fcw_ld, harq_layout);
 
 	input = op->ldpc_dec.input.data;
 	h_output_head = h_output = op->ldpc_dec.hard_output.data;
@@ -3100,7 +3274,7 @@ enqueue_dec_one_op_tb(struct acc100_queue *q, struct rte_bbdev_dec_op *op,
 
 #ifdef RTE_LIBRTE_BBDEV_DEBUG
 	/* Validate op structure */
-	if (validate_dec_op(op) == -1) {
+	if (validate_dec_op(op, q) == -1) {
 		rte_bbdev_log(ERR, "Turbo decoder validation failed");
 		return -EINVAL;
 	}
@@ -3411,7 +3585,7 @@ acc100_enqueue_enc(struct rte_bbdev_queue_data *q_data,
 {
 	if (unlikely(num == 0))
 		return 0;
-	if (ops[0]->turbo_enc.code_block_mode == 0)
+	if (ops[0]->turbo_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_enc_tb(q_data, ops, num);
 	else
 		return acc100_enqueue_enc_cb(q_data, ops, num);
@@ -3424,7 +3598,7 @@ acc100_enqueue_ldpc_enc(struct rte_bbdev_queue_data *q_data,
 {
 	if (unlikely(num == 0))
 		return 0;
-	if (ops[0]->ldpc_enc.code_block_mode == 0)
+	if (ops[0]->ldpc_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_enc_tb(q_data, ops, num);
 	else
 		return acc100_enqueue_ldpc_enc_cb(q_data, ops, num);
@@ -3607,7 +3781,7 @@ acc100_enqueue_dec(struct rte_bbdev_queue_data *q_data,
 {
 	if (unlikely(num == 0))
 		return 0;
-	if (ops[0]->turbo_dec.code_block_mode == 0)
+	if (ops[0]->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_dec_tb(q_data, ops, num);
 	else
 		return acc100_enqueue_dec_cb(q_data, ops, num);
@@ -3625,7 +3799,7 @@ acc100_enqueue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 	if (unlikely((aq_avail == 0) || (num == 0)))
 		return 0;
 
-	if (ops[0]->ldpc_dec.code_block_mode == 0)
+	if (ops[0]->ldpc_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 		return acc100_enqueue_ldpc_dec_tb(q_data, ops, num);
 	else
 		return acc100_enqueue_ldpc_dec_cb(q_data, ops, num);
@@ -3966,7 +4140,7 @@ acc100_dequeue_enc(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
-		if (op->turbo_enc.code_block_mode == 0)
+		if (op->turbo_enc.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 			ret = dequeue_enc_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);
 		else
@@ -4050,7 +4224,7 @@ acc100_dequeue_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
-		if (op->turbo_dec.code_block_mode == 0)
+		if (op->turbo_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);
 		else
@@ -4095,7 +4269,7 @@ acc100_dequeue_ldpc_dec(struct rte_bbdev_queue_data *q_data,
 	for (i = 0; i < dequeue_num; ++i) {
 		op = (q->ring_addr + ((q->sw_ring_tail + dequeued_cbs)
 			& q->sw_ring_wrap_mask))->req.op_addr;
-		if (op->ldpc_dec.code_block_mode == 0)
+		if (op->ldpc_dec.code_block_mode == RTE_BBDEV_TRANSPORT_BLOCK)
 			ret = dequeue_dec_one_op_tb(q, &ops[i], dequeued_cbs,
 					&aq_dequeued);
 		else
@@ -4133,9 +4307,19 @@ acc100_bbdev_init(struct rte_bbdev *dev, struct rte_pci_driver *drv)
 	dev->dequeue_ldpc_enc_ops = acc100_dequeue_ldpc_enc;
 	dev->dequeue_ldpc_dec_ops = acc100_dequeue_ldpc_dec;
 
+	/* Device variant specific handling */
+	if ((pci_dev->id.device_id == ACC100_PF_DEVICE_ID) ||
+			(pci_dev->id.device_id == ACC100_VF_DEVICE_ID)) {
+		((struct acc100_device *) dev->data->dev_private)->device_variant = ACC100_VARIANT;
+		((struct acc100_device *) dev->data->dev_private)->fcw_ld_fill = acc100_fcw_ld_fill;
+	} else {
+		((struct acc100_device *) dev->data->dev_private)->device_variant = ACC101_VARIANT;
+		((struct acc100_device *) dev->data->dev_private)->fcw_ld_fill = acc101_fcw_ld_fill;
+	}
+
 	((struct acc100_device *) dev->data->dev_private)->pf_device =
-			!strcmp(drv->driver.name,
-					RTE_STR(ACC100PF_DRIVER_NAME));
+			!strcmp(drv->driver.name, RTE_STR(ACC100PF_DRIVER_NAME));
+
 	((struct acc100_device *) dev->data->dev_private)->mmio_base =
 			pci_dev->mem_resource[0].addr;
 
@@ -4178,7 +4362,7 @@ static int acc100_pci_probe(struct rte_pci_driver *pci_drv,
 
 	/* Fill HW specific part of device structure */
 	bbdev->device = &pci_dev->device;
-	bbdev->intr_handle = &pci_dev->intr_handle;
+	bbdev->intr_handle = pci_dev->intr_handle;
 	bbdev->data->socket_id = pci_dev->device.numa_node;
 
 	/* Invoke ACC100 device initialization function */
@@ -4395,18 +4579,17 @@ poweron_cleanup(struct rte_bbdev *bbdev, struct acc100_device *d,
 	}
 	printf("Number of 5GUL engines %d\n", numEngines);
 
-	if (d->sw_rings_base != NULL)
-		rte_free(d->sw_rings_base);
+	rte_free(d->sw_rings_base);
 	usleep(ACC100_LONG_WAIT);
 }
 
 /* Initial configuration of a ACC100 device prior to running configure() */
-int
-rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
+static int
+acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 {
 	rte_bbdev_log(INFO, "rte_acc100_configure");
 	uint32_t value, address, status;
-	int qg_idx, template_idx, vf_idx, acc, i;
+	int qg_idx, template_idx, vf_idx, acc, i, j;
 	struct rte_bbdev *bbdev = rte_bbdev_get_named_dev(dev_name);
 
 	/* Compile time checks */
@@ -4425,6 +4608,9 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 
 	/* Store configuration */
 	rte_memcpy(&d->acc100_conf, conf, sizeof(d->acc100_conf));
+
+	value = acc100_reg_read(d, HwPfPcieGpexBridgeControl);
+	bool firstCfg = (value != ACC100_CFG_PCI_BRIDGE);
 
 	/* PCIe Bridge configuration */
 	acc100_reg_write(d, HwPfPcieGpexBridgeControl, ACC100_CFG_PCI_BRIDGE);
@@ -4446,20 +4632,9 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	value = 1;
 	acc100_reg_write(d, address, value);
 
-	/* DDR Configuration */
-	address = HWPfDdrBcTim6;
-	value = acc100_reg_read(d, address);
-	value &= 0xFFFFFFFB; /* Bit 2 */
-#ifdef ACC100_DDR_ECC_ENABLE
-	value |= 0x4;
-#endif
-	acc100_reg_write(d, address, value);
-	address = HWPfDdrPhyDqsCountNum;
-#ifdef ACC100_DDR_ECC_ENABLE
-	value = 9;
-#else
-	value = 8;
-#endif
+	/* Enable granular dynamic clock gating */
+	address = HWPfHiClkGateHystReg;
+	value = ACC100_CLOCK_GATING_EN;
 	acc100_reg_write(d, address, value);
 
 	/* Set default descriptor signature */
@@ -4477,6 +4652,17 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	address = HWPfDmaAxcacheReg;
 	acc100_reg_write(d, address, value);
 
+	/* Adjust PCIe Lane adaptation */
+	for (i = 0; i < ACC100_QUAD_NUMS; i++)
+		for (j = 0; j < ACC100_LANES_PER_QUAD; j++)
+			acc100_reg_write(d, HwPfPcieLnAdaptctrl + i * ACC100_PCIE_QUAD_OFFSET
+					+ j * ACC100_PCIE_LANE_OFFSET, ACC100_ADAPT);
+
+	/* Enable PCIe live adaptation */
+	for (i = 0; i < ACC100_QUAD_NUMS; i++)
+		acc100_reg_write(d, HwPfPciePcsEqControl +
+				i * ACC100_PCIE_QUAD_OFFSET, ACC100_PCS_EQ);
+
 	/* Default DMA Configuration (Qmgr Enabled) */
 	address = HWPfDmaConfig0Reg;
 	value = 0;
@@ -4493,6 +4679,11 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	/* Configure DMA Qmanager addresses */
 	address = HWPfDmaQmgrAddrReg;
 	value = HWPfQmgrEgressQueuesTemplate;
+	acc100_reg_write(d, address, value);
+
+	/* Default Fabric Mode */
+	address = HWPfFabricMode;
+	value = ACC100_FABRIC_MODE;
 	acc100_reg_write(d, address, value);
 
 	/* ===== Qmgr Configuration ===== */
@@ -4513,22 +4704,17 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	}
 
 	/* Template Priority in incremental order */
-	for (template_idx = 0; template_idx < ACC100_NUM_TMPL;
-			template_idx++) {
-		address = HWPfQmgrGrpTmplateReg0Indx +
-		ACC100_BYTES_IN_WORD * (template_idx % 8);
+	for (template_idx = 0; template_idx < ACC100_NUM_TMPL; template_idx++) {
+		address = HWPfQmgrGrpTmplateReg0Indx + ACC100_BYTES_IN_WORD * template_idx;
 		value = ACC100_TMPL_PRI_0;
 		acc100_reg_write(d, address, value);
-		address = HWPfQmgrGrpTmplateReg1Indx +
-		ACC100_BYTES_IN_WORD * (template_idx % 8);
+		address = HWPfQmgrGrpTmplateReg1Indx + ACC100_BYTES_IN_WORD * template_idx;
 		value = ACC100_TMPL_PRI_1;
 		acc100_reg_write(d, address, value);
-		address = HWPfQmgrGrpTmplateReg2indx +
-		ACC100_BYTES_IN_WORD * (template_idx % 8);
+		address = HWPfQmgrGrpTmplateReg2indx + ACC100_BYTES_IN_WORD * template_idx;
 		value = ACC100_TMPL_PRI_2;
 		acc100_reg_write(d, address, value);
-		address = HWPfQmgrGrpTmplateReg3Indx +
-		ACC100_BYTES_IN_WORD * (template_idx % 8);
+		address = HWPfQmgrGrpTmplateReg3Indx + ACC100_BYTES_IN_WORD * template_idx;
 		value = ACC100_TMPL_PRI_3;
 		acc100_reg_write(d, address, value);
 	}
@@ -4579,9 +4765,6 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 			numEngines++;
 		} else
 			acc100_reg_write(d, address, 0);
-#if RTE_ACC100_SINGLE_FEC == 1
-		value = 0;
-#endif
 	}
 	printf("Number of 5GUL engines %d\n", numEngines);
 	/* 4GDL */
@@ -4596,9 +4779,6 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 		address = HWPfQmgrGrpTmplateReg4Indx
 				+ ACC100_BYTES_IN_WORD * template_idx;
 		acc100_reg_write(d, address, value);
-#if RTE_ACC100_SINGLE_FEC == 1
-			value = 0;
-#endif
 	}
 	/* 5GDL */
 	numQqsAcc += numQgs;
@@ -4612,13 +4792,10 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 		address = HWPfQmgrGrpTmplateReg4Indx
 				+ ACC100_BYTES_IN_WORD * template_idx;
 		acc100_reg_write(d, address, value);
-#if RTE_ACC100_SINGLE_FEC == 1
-		value = 0;
-#endif
 	}
 
 	/* Queue Group Function mapping */
-	int qman_func_id[5] = {0, 2, 1, 3, 4};
+	int qman_func_id[8] = {0, 2, 1, 3, 4, 0, 0, 0};
 	address = HWPfQmgrGrpFunction0;
 	value = 0;
 	for (qg_idx = 0; qg_idx < 8; qg_idx++) {
@@ -4649,7 +4826,7 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 		}
 	}
 
-	/* This pointer to ARAM (256kB) is shifted by 2 (4B per register) */
+	/* This pointer to ARAM (128kB) is shifted by 2 (4B per register) */
 	uint32_t aram_address = 0;
 	for (qg_idx = 0; qg_idx < totalQgs; qg_idx++) {
 		for (vf_idx = 0; vf_idx < conf->num_vf_bundles; vf_idx++) {
@@ -4674,6 +4851,11 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 
 	/* ==== HI Configuration ==== */
 
+	/* No Info Ring/MSI by default */
+	acc100_reg_write(d, HWPfHiInfoRingIntWrEnRegPf, 0);
+	acc100_reg_write(d, HWPfHiInfoRingVf2pfLoWrEnReg, 0);
+	acc100_reg_write(d, HWPfHiCfgMsiIntWrEnRegPf, 0xFFFFFFFF);
+	acc100_reg_write(d, HWPfHiCfgMsiVf2pfLoWrEnReg, 0xFFFFFFFF);
 	/* Prevent Block on Transmit Error */
 	address = HWPfHiBlockTransmitOnErrorEn;
 	value = 0;
@@ -4686,10 +4868,6 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	address = HWPfHiPfMode;
 	value = (conf->pf_mode_en) ? ACC100_PF_VAL : 0;
 	acc100_reg_write(d, address, value);
-	/* Enable Error Detection in HW */
-	address = HWPfDmaErrorDetectionEn;
-	value = 0x3D7;
-	acc100_reg_write(d, address, value);
 
 	/* QoS overflow init */
 	value = 1;
@@ -4699,7 +4877,7 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	acc100_reg_write(d, address, value);
 
 	/* HARQ DDR Configuration */
-	unsigned int ddrSizeInMb = 512; /* Fixed to 512 MB per VF for now */
+	unsigned int ddrSizeInMb = ACC100_HARQ_DDR;
 	for (vf_idx = 0; vf_idx < conf->num_vf_bundles; vf_idx++) {
 		address = HWPfDmaVfDdrBaseRw + vf_idx
 				* 0x10;
@@ -4713,6 +4891,398 @@ rte_acc100_configure(const char *dev_name, struct rte_acc100_conf *conf)
 	if (numEngines < (ACC100_SIG_UL_5G_LAST + 1))
 		poweron_cleanup(bbdev, d, conf);
 
+	uint32_t version = 0;
+	for (i = 0; i < 4; i++)
+		version += acc100_reg_read(d,
+				HWPfDdrPhyIdtmFwVersion + 4 * i) << (8 * i);
+	if (version != ACC100_PRQ_DDR_VER) {
+		printf("* Note: Not on DDR PRQ version %8x != %08x\n",
+				version, ACC100_PRQ_DDR_VER);
+	} else if (firstCfg) {
+		/* ---- DDR configuration at boot up --- */
+		/* Read Clear Ddr training status */
+		acc100_reg_read(d, HWPfChaDdrStDoneStatus);
+		/* Reset PHY/IDTM/UMMC */
+		acc100_reg_write(d, HWPfChaDdrWbRstCfg, 3);
+		acc100_reg_write(d, HWPfChaDdrApbRstCfg, 2);
+		acc100_reg_write(d, HWPfChaDdrPhyRstCfg, 2);
+		acc100_reg_write(d, HWPfChaDdrCpuRstCfg, 3);
+		acc100_reg_write(d, HWPfChaDdrSifRstCfg, 2);
+		usleep(ACC100_MS_IN_US);
+		/* Reset WB and APB resets */
+		acc100_reg_write(d, HWPfChaDdrWbRstCfg, 2);
+		acc100_reg_write(d, HWPfChaDdrApbRstCfg, 3);
+		/* Configure PHY-IDTM */
+		acc100_reg_write(d, HWPfDdrPhyIdletimeout, 0x3e8);
+		/* IDTM timing registers */
+		acc100_reg_write(d, HWPfDdrPhyRdLatency, 0x13);
+		acc100_reg_write(d, HWPfDdrPhyRdLatencyDbi, 0x15);
+		acc100_reg_write(d, HWPfDdrPhyWrLatency, 0x10011);
+		/* Configure SDRAM MRS registers */
+		acc100_reg_write(d, HWPfDdrPhyMr01Dimm, 0x3030b70);
+		acc100_reg_write(d, HWPfDdrPhyMr01DimmDbi, 0x3030b50);
+		acc100_reg_write(d, HWPfDdrPhyMr23Dimm, 0x30);
+		acc100_reg_write(d, HWPfDdrPhyMr67Dimm, 0xc00);
+		acc100_reg_write(d, HWPfDdrPhyMr45Dimm, 0x4000000);
+		/* Configure active lanes */
+		acc100_reg_write(d, HWPfDdrPhyDqsCountMax, 0x9);
+		acc100_reg_write(d, HWPfDdrPhyDqsCountNum, 0x9);
+		/* Configure WR/RD leveling timing registers */
+		acc100_reg_write(d, HWPfDdrPhyWrlvlWwRdlvlRr, 0x101212);
+		/* Configure what trainings to execute */
+		acc100_reg_write(d, HWPfDdrPhyTrngType, 0x2d3c);
+		/* Releasing PHY reset */
+		acc100_reg_write(d, HWPfChaDdrPhyRstCfg, 3);
+		/* Configure Memory Controller registers */
+		acc100_reg_write(d, HWPfDdrMemInitPhyTrng0, 0x3);
+		acc100_reg_write(d, HWPfDdrBcDram, 0x3c232003);
+		acc100_reg_write(d, HWPfDdrBcAddrMap, 0x31);
+		/* Configure UMMC BC timing registers */
+		acc100_reg_write(d, HWPfDdrBcRef, 0xa22);
+		acc100_reg_write(d, HWPfDdrBcTim0, 0x4050501);
+		acc100_reg_write(d, HWPfDdrBcTim1, 0xf0b0476);
+		acc100_reg_write(d, HWPfDdrBcTim2, 0x103);
+		acc100_reg_write(d, HWPfDdrBcTim3, 0x144050a1);
+		acc100_reg_write(d, HWPfDdrBcTim4, 0x23300);
+		acc100_reg_write(d, HWPfDdrBcTim5, 0x4230276);
+		acc100_reg_write(d, HWPfDdrBcTim6, 0x857914);
+		acc100_reg_write(d, HWPfDdrBcTim7, 0x79100232);
+		acc100_reg_write(d, HWPfDdrBcTim8, 0x100007ce);
+		acc100_reg_write(d, HWPfDdrBcTim9, 0x50020);
+		acc100_reg_write(d, HWPfDdrBcTim10, 0x40ee);
+		/* Configure UMMC DFI timing registers */
+		acc100_reg_write(d, HWPfDdrDfiInit, 0x5000);
+		acc100_reg_write(d, HWPfDdrDfiTim0, 0x15030006);
+		acc100_reg_write(d, HWPfDdrDfiTim1, 0x11305);
+		acc100_reg_write(d, HWPfDdrDfiPhyUpdEn, 0x1);
+		acc100_reg_write(d, HWPfDdrUmmcIntEn, 0x1f);
+		/* Release IDTM CPU out of reset */
+		acc100_reg_write(d, HWPfChaDdrCpuRstCfg, 0x2);
+		/* Wait PHY-IDTM to finish static training */
+		for (i = 0; i < ACC100_DDR_TRAINING_MAX; i++) {
+			usleep(ACC100_MS_IN_US);
+			value = acc100_reg_read(d,
+					HWPfChaDdrStDoneStatus);
+			if (value & 1)
+				break;
+		}
+		printf("DDR Training completed in %d ms", i);
+		/* Enable Memory Controller */
+		acc100_reg_write(d, HWPfDdrUmmcCtrl, 0x401);
+		/* Release AXI interface reset */
+		acc100_reg_write(d, HWPfChaDdrSifRstCfg, 3);
+	}
+
 	rte_bbdev_log_debug("PF Tip configuration complete for %s", dev_name);
 	return 0;
+}
+
+
+/* Initial configuration of a ACC101 device prior to running configure() */
+static int
+acc101_configure(const char *dev_name, struct rte_acc100_conf *conf)
+{
+	rte_bbdev_log(INFO, "rte_acc101_configure");
+	uint32_t value, address, status;
+	int qg_idx, template_idx, vf_idx, acc, i;
+	struct rte_bbdev *bbdev = rte_bbdev_get_named_dev(dev_name);
+
+	/* Compile time checks */
+	RTE_BUILD_BUG_ON(sizeof(struct acc100_dma_req_desc) != 256);
+	RTE_BUILD_BUG_ON(sizeof(union acc100_dma_desc) != 256);
+	RTE_BUILD_BUG_ON(sizeof(struct acc100_fcw_td) != 24);
+	RTE_BUILD_BUG_ON(sizeof(struct acc100_fcw_te) != 32);
+
+	if (bbdev == NULL) {
+		rte_bbdev_log(ERR,
+		"Invalid dev_name (%s), or device is not yet initialised",
+		dev_name);
+		return -ENODEV;
+	}
+	struct acc100_device *d = bbdev->data->dev_private;
+
+	/* Store configuration */
+	rte_memcpy(&d->acc100_conf, conf, sizeof(d->acc100_conf));
+
+	/* PCIe Bridge configuration */
+	acc100_reg_write(d, HwPfPcieGpexBridgeControl, ACC101_CFG_PCI_BRIDGE);
+	for (i = 1; i < ACC101_GPEX_AXIMAP_NUM; i++)
+		acc100_reg_write(d, HwPfPcieGpexAxiAddrMappingWindowPexBaseHigh + i * 16, 0);
+
+	/* Prevent blocking AXI read on BRESP for AXI Write */
+	address = HwPfPcieGpexAxiPioControl;
+	value = ACC101_CFG_PCI_AXI;
+	acc100_reg_write(d, address, value);
+
+	/* Explicitly releasing AXI including a 2ms delay on ACC101 */
+	usleep(2000);
+	acc100_reg_write(d, HWPfDmaAxiControl, 1);
+
+	/* Set the default 5GDL DMA configuration */
+	acc100_reg_write(d, HWPfDmaInboundDrainDataSize, ACC101_DMA_INBOUND);
+
+	/* Enable granular dynamic clock gating */
+	address = HWPfHiClkGateHystReg;
+	value = ACC101_CLOCK_GATING_EN;
+	acc100_reg_write(d, address, value);
+
+	/* Set default descriptor signature */
+	address = HWPfDmaDescriptorSignatuture;
+	value = 0;
+	acc100_reg_write(d, address, value);
+
+	/* Enable the Error Detection in DMA */
+	value = ACC101_CFG_DMA_ERROR;
+	address = HWPfDmaErrorDetectionEn;
+	acc100_reg_write(d, address, value);
+
+	/* AXI Cache configuration */
+	value = ACC101_CFG_AXI_CACHE;
+	address = HWPfDmaAxcacheReg;
+	acc100_reg_write(d, address, value);
+
+	/* Default DMA Configuration (Qmgr Enabled) */
+	address = HWPfDmaConfig0Reg;
+	value = 0;
+	acc100_reg_write(d, address, value);
+	address = HWPfDmaQmanen;
+	value = 0;
+	acc100_reg_write(d, address, value);
+
+	/* Default RLIM/ALEN configuration */
+	address = HWPfDmaConfig1Reg;
+	int alen_r = 0xF;
+	int alen_w = 0x7;
+	value = (1 << 31) + (alen_w << 20)  + (1 << 6) + alen_r;
+	acc100_reg_write(d, address, value);
+
+	/* Configure DMA Qmanager addresses */
+	address = HWPfDmaQmgrAddrReg;
+	value = HWPfQmgrEgressQueuesTemplate;
+	acc100_reg_write(d, address, value);
+
+	/* ===== Qmgr Configuration ===== */
+	/* Configuration of the AQueue Depth QMGR_GRP_0_DEPTH_LOG2 for UL */
+	int totalQgs = conf->q_ul_4g.num_qgroups +
+			conf->q_ul_5g.num_qgroups +
+			conf->q_dl_4g.num_qgroups +
+			conf->q_dl_5g.num_qgroups;
+	for (qg_idx = 0; qg_idx < totalQgs; qg_idx++) {
+		address = HWPfQmgrDepthLog2Grp +
+		ACC101_BYTES_IN_WORD * qg_idx;
+		value = aqDepth(qg_idx, conf);
+		acc100_reg_write(d, address, value);
+		address = HWPfQmgrTholdGrp +
+		ACC101_BYTES_IN_WORD * qg_idx;
+		value = (1 << 16) + (1 << (aqDepth(qg_idx, conf) - 1));
+		acc100_reg_write(d, address, value);
+	}
+
+	/* Template Priority in incremental order */
+	for (template_idx = 0; template_idx < ACC101_NUM_TMPL;
+			template_idx++) {
+		address = HWPfQmgrGrpTmplateReg0Indx + ACC101_BYTES_IN_WORD * template_idx;
+		value = ACC101_TMPL_PRI_0;
+		acc100_reg_write(d, address, value);
+		address = HWPfQmgrGrpTmplateReg1Indx + ACC101_BYTES_IN_WORD * template_idx;
+		value = ACC101_TMPL_PRI_1;
+		acc100_reg_write(d, address, value);
+		address = HWPfQmgrGrpTmplateReg2indx + ACC101_BYTES_IN_WORD * template_idx;
+		value = ACC101_TMPL_PRI_2;
+		acc100_reg_write(d, address, value);
+		address = HWPfQmgrGrpTmplateReg3Indx + ACC101_BYTES_IN_WORD * template_idx;
+		value = ACC101_TMPL_PRI_3;
+		acc100_reg_write(d, address, value);
+	}
+
+	address = HWPfQmgrGrpPriority;
+	value = ACC101_CFG_QMGR_HI_P;
+	acc100_reg_write(d, address, value);
+
+	/* Template Configuration */
+	for (template_idx = 0; template_idx < ACC101_NUM_TMPL;
+			template_idx++) {
+		value = 0;
+		address = HWPfQmgrGrpTmplateReg4Indx
+				+ ACC101_BYTES_IN_WORD * template_idx;
+		acc100_reg_write(d, address, value);
+	}
+	/* 4GUL */
+	int numQgs = conf->q_ul_4g.num_qgroups;
+	int numQqsAcc = 0;
+	value = 0;
+	for (qg_idx = numQqsAcc; qg_idx < (numQgs + numQqsAcc); qg_idx++)
+		value |= (1 << qg_idx);
+	for (template_idx = ACC101_SIG_UL_4G;
+			template_idx <= ACC101_SIG_UL_4G_LAST;
+			template_idx++) {
+		address = HWPfQmgrGrpTmplateReg4Indx
+				+ ACC101_BYTES_IN_WORD * template_idx;
+		acc100_reg_write(d, address, value);
+	}
+	/* 5GUL */
+	numQqsAcc += numQgs;
+	numQgs	= conf->q_ul_5g.num_qgroups;
+	value = 0;
+	int numEngines = 0;
+	for (qg_idx = numQqsAcc; qg_idx < (numQgs + numQqsAcc); qg_idx++)
+		value |= (1 << qg_idx);
+	for (template_idx = ACC101_SIG_UL_5G;
+			template_idx <= ACC101_SIG_UL_5G_LAST;
+			template_idx++) {
+		/* Check engine power-on status */
+		address = HwPfFecUl5gIbDebugReg +
+				ACC101_ENGINE_OFFSET * template_idx;
+		status = (acc100_reg_read(d, address) >> 4) & 0xF;
+		address = HWPfQmgrGrpTmplateReg4Indx
+				+ ACC101_BYTES_IN_WORD * template_idx;
+		if (status == 1) {
+			acc100_reg_write(d, address, value);
+			numEngines++;
+		} else
+			acc100_reg_write(d, address, 0);
+	}
+	printf("Number of 5GUL engines %d\n", numEngines);
+	/* 4GDL */
+	numQqsAcc += numQgs;
+	numQgs	= conf->q_dl_4g.num_qgroups;
+	value = 0;
+	for (qg_idx = numQqsAcc; qg_idx < (numQgs + numQqsAcc); qg_idx++)
+		value |= (1 << qg_idx);
+	for (template_idx = ACC101_SIG_DL_4G;
+			template_idx <= ACC101_SIG_DL_4G_LAST;
+			template_idx++) {
+		address = HWPfQmgrGrpTmplateReg4Indx
+				+ ACC101_BYTES_IN_WORD * template_idx;
+		acc100_reg_write(d, address, value);
+	}
+	/* 5GDL */
+	numQqsAcc += numQgs;
+	numQgs	= conf->q_dl_5g.num_qgroups;
+	value = 0;
+	for (qg_idx = numQqsAcc; qg_idx < (numQgs + numQqsAcc); qg_idx++)
+		value |= (1 << qg_idx);
+	for (template_idx = ACC101_SIG_DL_5G;
+			template_idx <= ACC101_SIG_DL_5G_LAST;
+			template_idx++) {
+		address = HWPfQmgrGrpTmplateReg4Indx
+				+ ACC101_BYTES_IN_WORD * template_idx;
+		acc100_reg_write(d, address, value);
+	}
+
+	/* Queue Group Function mapping */
+	int qman_func_id[8] = {0, 2, 1, 3, 4, 0, 0, 0};
+	address = HWPfQmgrGrpFunction0;
+	value = 0;
+	for (qg_idx = 0; qg_idx < 8; qg_idx++) {
+		acc = accFromQgid(qg_idx, conf);
+		value |= qman_func_id[acc]<<(qg_idx * 4);
+	}
+	acc100_reg_write(d, address, value);
+
+	/* Configuration of the Arbitration QGroup depth to 1 */
+	for (qg_idx = 0; qg_idx < totalQgs; qg_idx++) {
+		address = HWPfQmgrArbQDepthGrp +
+		ACC101_BYTES_IN_WORD * qg_idx;
+		value = 0;
+		acc100_reg_write(d, address, value);
+	}
+
+	/* Enabling AQueues through the Queue hierarchy*/
+	for (vf_idx = 0; vf_idx < ACC101_NUM_VFS; vf_idx++) {
+		for (qg_idx = 0; qg_idx < ACC101_NUM_QGRPS; qg_idx++) {
+			value = 0;
+			if (vf_idx < conf->num_vf_bundles &&
+					qg_idx < totalQgs)
+				value = (1 << aqNum(qg_idx, conf)) - 1;
+			address = HWPfQmgrAqEnableVf
+					+ vf_idx * ACC101_BYTES_IN_WORD;
+			value += (qg_idx << 16);
+			acc100_reg_write(d, address, value);
+		}
+	}
+
+	/* This pointer to ARAM (128kB) is shifted by 2 (4B per register) */
+	uint32_t aram_address = 0;
+	for (qg_idx = 0; qg_idx < totalQgs; qg_idx++) {
+		for (vf_idx = 0; vf_idx < conf->num_vf_bundles; vf_idx++) {
+			address = HWPfQmgrVfBaseAddr + vf_idx
+					* ACC101_BYTES_IN_WORD + qg_idx
+					* ACC101_BYTES_IN_WORD * 64;
+			value = aram_address;
+			acc100_reg_write(d, address, value);
+			/* Offset ARAM Address for next memory bank
+			 * - increment of 4B
+			 */
+			aram_address += aqNum(qg_idx, conf) *
+					(1 << aqDepth(qg_idx, conf));
+		}
+	}
+
+	if (aram_address > ACC101_WORDS_IN_ARAM_SIZE) {
+		rte_bbdev_log(ERR, "ARAM Configuration not fitting %d %d\n",
+				aram_address, ACC101_WORDS_IN_ARAM_SIZE);
+		return -EINVAL;
+	}
+
+	/* ==== HI Configuration ==== */
+
+	/* No Info Ring/MSI by default */
+	acc100_reg_write(d, HWPfHiInfoRingIntWrEnRegPf, 0);
+	acc100_reg_write(d, HWPfHiInfoRingVf2pfLoWrEnReg, 0);
+	acc100_reg_write(d, HWPfHiCfgMsiIntWrEnRegPf, 0xFFFFFFFF);
+	acc100_reg_write(d, HWPfHiCfgMsiVf2pfLoWrEnReg, 0xFFFFFFFF);
+	/* Prevent Block on Transmit Error */
+	address = HWPfHiBlockTransmitOnErrorEn;
+	value = 0;
+	acc100_reg_write(d, address, value);
+	/* Prevents to drop MSI */
+	address = HWPfHiMsiDropEnableReg;
+	value = 0;
+	acc100_reg_write(d, address, value);
+	/* Set the PF Mode register */
+	address = HWPfHiPfMode;
+	value = (conf->pf_mode_en) ? ACC101_PF_VAL : 0;
+	acc100_reg_write(d, address, value);
+	/* Explicitly releasing AXI after PF Mode and 2 ms */
+	usleep(2000);
+	acc100_reg_write(d, HWPfDmaAxiControl, 1);
+
+	/* QoS overflow init */
+	value = 1;
+	address = HWPfQosmonAEvalOverflow0;
+	acc100_reg_write(d, address, value);
+	address = HWPfQosmonBEvalOverflow0;
+	acc100_reg_write(d, address, value);
+
+	/* HARQ DDR Configuration */
+	unsigned int ddrSizeInMb = ACC101_HARQ_DDR;
+	for (vf_idx = 0; vf_idx < conf->num_vf_bundles; vf_idx++) {
+		address = HWPfDmaVfDdrBaseRw + vf_idx
+				* 0x10;
+		value = ((vf_idx * (ddrSizeInMb / 64)) << 16) +
+				(ddrSizeInMb - 1);
+		acc100_reg_write(d, address, value);
+	}
+	usleep(ACC101_LONG_WAIT);
+
+	rte_bbdev_log_debug("PF TIP configuration complete for %s", dev_name);
+	return 0;
+}
+
+int
+rte_acc10x_configure(const char *dev_name, struct rte_acc100_conf *conf)
+{
+	struct rte_bbdev *bbdev = rte_bbdev_get_named_dev(dev_name);
+	if (bbdev == NULL) {
+		rte_bbdev_log(ERR, "Invalid dev_name (%s), or device is not yet initialised",
+				dev_name);
+		return -ENODEV;
+	}
+	struct rte_pci_device *pci_dev = RTE_DEV_TO_PCI(bbdev->device);
+	printf("Configure dev id %x\n", pci_dev->id.device_id);
+	if (pci_dev->id.device_id == ACC100_PF_DEVICE_ID)
+		return acc100_configure(dev_name, conf);
+	else
+		return acc101_configure(dev_name, conf);
 }

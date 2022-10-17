@@ -10,7 +10,7 @@
 #ifndef _SFC_EFX_H_
 #define _SFC_EFX_H_
 
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 
 #include "efx.h"
 #include "efsys.h"
@@ -18,8 +18,6 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-
-#define SFC_EFX_KVARG_DEV_CLASS	"class"
 
 enum sfc_efx_dev_class {
 	SFC_EFX_DEV_CLASS_INVALID = 0,

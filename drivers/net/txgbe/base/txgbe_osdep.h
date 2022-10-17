@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-3-Clause
- * Copyright(c) 2015-2020
+ * Copyright(c) 2015-2020 Beijing WangXun Technology Co., Ltd.
+ * Copyright(c) 2010-2017 Intel Corporation
  */
 
 #ifndef _TXGBE_OS_H_
@@ -17,6 +18,7 @@
 #include <rte_byteorder.h>
 #include <rte_config.h>
 #include <rte_io.h>
+#include <rte_ether.h>
 
 #include "../txgbe_logs.h"
 

@@ -6,7 +6,6 @@
 #include <dirent.h>
 
 #include <rte_log.h>
-#include <rte_bus.h>
 #include <rte_pci.h>
 #include <rte_bus_pci.h>
 #include <rte_malloc.h>
@@ -21,14 +20,8 @@
 
 /**
  * @file
- * PCI probing under linux
- *
- * This code is used to simulate a PCI probe by parsing information in sysfs.
- * When a registered device matches a driver, it is then initialized with
- * IGB_UIO driver (or doesn't initialize, if the device wasn't bound to it).
+ * PCI probing using Linux sysfs.
  */
-
-extern struct rte_pci_bus rte_pci_bus;
 
 static int
 pci_get_kernel_driver_by_path(const char *filename, char *dri_name,
@@ -233,7 +226,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	/* get vendor id */
 	snprintf(filename, sizeof(filename), "%s/vendor", dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 	dev->id.vendor_id = (uint16_t)tmp;
@@ -241,7 +234,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	/* get device id */
 	snprintf(filename, sizeof(filename), "%s/device", dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 	dev->id.device_id = (uint16_t)tmp;
@@ -250,7 +243,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/subsystem_vendor",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 	dev->id.subsystem_vendor_id = (uint16_t)tmp;
@@ -259,7 +252,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/subsystem_device",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 	dev->id.subsystem_device_id = (uint16_t)tmp;
@@ -268,7 +261,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	snprintf(filename, sizeof(filename), "%s/class",
 		 dirname);
 	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 	/* the least 24 bits are valid: class, subclass, program interface */
@@ -290,25 +283,21 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	}
 
 	/* get numa node, default to 0 if not present */
-	snprintf(filename, sizeof(filename), "%s/numa_node",
-		 dirname);
+	snprintf(filename, sizeof(filename), "%s/numa_node", dirname);
 
-	if (access(filename, F_OK) != -1) {
-		if (eal_parse_sysfs_value(filename, &tmp) == 0)
-			dev->device.numa_node = tmp;
-		else
-			dev->device.numa_node = -1;
-	} else {
-		dev->device.numa_node = 0;
-	}
+	if (access(filename, F_OK) == 0 &&
+	    eal_parse_sysfs_value(filename, &tmp) == 0)
+		dev->device.numa_node = tmp;
+	else
+		dev->device.numa_node = SOCKET_ID_ANY;
 
-	pci_name_set(dev);
+	pci_common_set(dev);
 
 	/* parse resources */
 	snprintf(filename, sizeof(filename), "%s/resource", dirname);
 	if (pci_parse_sysfs_resource(filename, dev) < 0) {
 		RTE_LOG(ERR, EAL, "%s(): cannot parse resource\n", __func__);
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 
@@ -317,7 +306,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 	ret = pci_get_kernel_driver_by_path(filename, driver, sizeof(driver));
 	if (ret < 0) {
 		RTE_LOG(ERR, EAL, "Fail to get kernel driver\n");
-		free(dev);
+		pci_free(dev);
 		return -1;
 	}
 
@@ -331,7 +320,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 		else
 			dev->kdrv = RTE_PCI_KDRV_UNKNOWN;
 	} else {
-		dev->kdrv = RTE_PCI_KDRV_NONE;
+		pci_free(dev);
 		return 0;
 	}
 	/* device is valid, add in list (sorted) */
@@ -353,7 +342,7 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 					dev2->kdrv = dev->kdrv;
 					dev2->max_vfs = dev->max_vfs;
 					dev2->id = dev->id;
-					pci_name_set(dev2);
+					pci_common_set(dev2);
 					memmove(dev2->mem_resource,
 						dev->mem_resource,
 						sizeof(dev->mem_resource));
@@ -383,10 +372,10 @@ pci_scan_one(const char *dirname, const struct rte_pci_addr *addr)
 					else if (dev2->device.devargs !=
 						 dev->device.devargs) {
 						rte_devargs_remove(dev2->device.devargs);
-						pci_name_set(dev2);
+						pci_common_set(dev2);
 					}
 				}
-				free(dev);
+				pci_free(dev);
 			}
 			return 0;
 		}
@@ -458,11 +447,6 @@ rte_pci_scan(void)
 	/* for debug purposes, PCI can be disabled */
 	if (!rte_eal_has_pci())
 		return 0;
-
-#ifdef VFIO_PRESENT
-	if (!pci_vfio_is_enabled())
-		RTE_LOG(DEBUG, EAL, "VFIO PCI modules not loaded\n");
-#endif
 
 	dir = opendir(rte_pci_get_sysfs_path());
 	if (dir == NULL) {
@@ -549,16 +533,22 @@ bool
 pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 {
 	/*
-	 * IOMMU is always present on a PowerNV host (IOMMUv2).
-	 * IOMMU is also present in a KVM/QEMU VM (IOMMUv1) but is not
-	 * currently supported by DPDK. Test for our current environment
-	 * and report VA support as appropriate.
+	 * All POWER systems support an IOMMU, but only IOMMUv2 supports
+	 * IOVA = VA in DPDK. Check contents of /proc/cpuinfo to find the
+	 * system.
+	 *
+	 * Platform | Model |  IOMMU  | VA? |             Comment
+	 * ---------+-------+---------+-----+---------------------------------
+	 *  PowerNV |  N/A  | IOMMUv2 | Yes | OpenPOWER (Bare Metal)
+	 *  pSeries | ~qemu | IOMMUv2 | Yes | PowerVM Logical Partition (LPAR)
+	 *  pSeries |  qemu | IOMMUv1 |  No | QEMU Virtual Machine
 	 */
 
 	char *line = NULL;
 	size_t len = 0;
 	char filename[PATH_MAX] = "/proc/cpuinfo";
 	FILE *fp = fopen(filename, "r");
+	bool pseries = false, powernv = false, qemu = false;
 	bool ret = false;
 
 	if (fp == NULL) {
@@ -567,20 +557,29 @@ pci_device_iommu_support_va(__rte_unused const struct rte_pci_device *dev)
 		return ret;
 	}
 
-	/* Check for a PowerNV platform */
+	/* Check the "platform" and "model" fields */
 	while (getline(&line, &len, fp) != -1) {
-		if (strstr(line, "platform") != NULL)
-			continue;
-
-		if (strstr(line, "PowerNV") != NULL) {
-			RTE_LOG(DEBUG, EAL, "Running on a PowerNV system\n");
-			ret = true;
-			break;
+		if (strstr(line, "platform") != NULL) {
+			if (strstr(line, "PowerNV") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a PowerNV platform\n");
+				powernv = true;
+			} else if (strstr(line, "pSeries") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Running on a pSeries platform\n");
+				pseries = true;
+			}
+		} else if (strstr(line, "model") != NULL) {
+			if (strstr(line, "qemu") != NULL) {
+				RTE_LOG(DEBUG, EAL, "Found qemu emulation\n");
+				qemu = true;
+			}
 		}
 	}
 
 	free(line);
 	fclose(fp);
+
+	if (powernv || (pseries && !qemu))
+		ret = true;
 	return ret;
 }
 #else
@@ -634,7 +633,7 @@ int rte_pci_read_config(const struct rte_pci_device *device,
 		void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
 	case RTE_PCI_KDRV_IGB_UIO:
@@ -658,7 +657,7 @@ int rte_pci_write_config(const struct rte_pci_device *device,
 		const void *buf, size_t len, off_t offset)
 {
 	char devname[RTE_DEV_NAME_MAX_LEN] = "";
-	const struct rte_intr_handle *intr_handle = &device->intr_handle;
+	const struct rte_intr_handle *intr_handle = device->intr_handle;
 
 	switch (device->kdrv) {
 	case RTE_PCI_KDRV_IGB_UIO:

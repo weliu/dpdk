@@ -506,7 +506,7 @@ end_qe:
 	return pkts_iter;
 }
 
-void
+int32_t
 sw_event_schedule(struct rte_eventdev *dev)
 {
 	struct sw_evdev *sw = sw_pmd_priv(dev);
@@ -517,7 +517,7 @@ sw_event_schedule(struct rte_eventdev *dev)
 
 	sw->sched_called++;
 	if (unlikely(!sw->started))
-		return;
+		return -EAGAIN;
 
 	do {
 		uint32_t in_pkts_this_iteration = 0;
@@ -559,6 +559,11 @@ sw_event_schedule(struct rte_eventdev *dev)
 	sw->sched_no_iq_enqueues += (in_pkts_total == 0);
 	sw->sched_no_cq_enqueues += (out_pkts_total == 0);
 
+	uint64_t work_done = (in_pkts_total + out_pkts_total) != 0;
+	sw->sched_progress_last_iter = work_done;
+
+	uint64_t cqs_scheds_last_iter = 0;
+
 	/* push all the internal buffered QEs in port->cq_ring to the
 	 * worker cores: aka, do the ring transfers batched.
 	 */
@@ -578,6 +583,7 @@ sw_event_schedule(struct rte_eventdev *dev)
 					&sw->cq_ring_space[i]);
 			port->cq_buf_count = 0;
 			no_enq = 0;
+			cqs_scheds_last_iter |= (1ULL << i);
 		} else {
 			sw->cq_ring_space[i] =
 					rte_event_ring_free_count(worker) -
@@ -597,4 +603,13 @@ sw_event_schedule(struct rte_eventdev *dev)
 			sw->sched_min_burst = sw->sched_min_burst_size;
 	}
 
+	/* Provide stats on what eventdev ports were scheduled to this
+	 * iteration. If more than 64 ports are active, always report that
+	 * all Eventdev ports have been scheduled events.
+	 */
+	sw->sched_last_iter_bitmask = cqs_scheds_last_iter;
+	if (unlikely(sw->port_count >= 64))
+		sw->sched_last_iter_bitmask = UINT64_MAX;
+
+	return work_done ? 0 : -EAGAIN;
 }

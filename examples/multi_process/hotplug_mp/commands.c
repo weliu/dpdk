@@ -8,6 +8,8 @@
 #include <cmdline_parse_num.h>
 #include <cmdline_parse_string.h>
 #include <cmdline.h>
+
+#include <rte_bus.h>
 #include <rte_ethdev.h>
 
 /**********************************************************/
@@ -121,16 +123,15 @@ static void cmd_dev_attach_parsed(void *parsed_result,
 
 	if (rte_devargs_parsef(&da, "%s", res->devargs)) {
 		cmdline_printf(cl, "cannot parse devargs\n");
-		if (da.args)
-			free(da.args);
 		return;
 	}
 
-	if (!rte_eal_hotplug_add(da.bus->name, da.name, da.args))
+	if (!rte_eal_hotplug_add(rte_bus_name(da.bus), da.name, da.args))
 		cmdline_printf(cl, "attached device %s\n", da.name);
 	else
 		cmdline_printf(cl, "failed to attached device %s\n",
 				da.name);
+	rte_devargs_reset(&da);
 }
 
 cmdline_parse_token_string_t cmd_dev_attach_attach =
@@ -168,18 +169,17 @@ static void cmd_dev_detach_parsed(void *parsed_result,
 
 	if (rte_devargs_parsef(&da, "%s", res->devargs)) {
 		cmdline_printf(cl, "cannot parse devargs\n");
-		if (da.args)
-			free(da.args);
 		return;
 	}
 
 	printf("detaching...\n");
-	if (!rte_eal_hotplug_remove(da.bus->name, da.name))
+	if (!rte_eal_hotplug_remove(rte_bus_name(da.bus), da.name))
 		cmdline_printf(cl, "detached device %s\n",
 			da.name);
 	else
-		cmdline_printf(cl, "failed to dettach device %s\n",
+		cmdline_printf(cl, "failed to detach device %s\n",
 			da.name);
+	rte_devargs_reset(&da);
 }
 
 cmdline_parse_token_string_t cmd_dev_detach_detach =

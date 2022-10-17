@@ -8,8 +8,8 @@ The ice PMD (**librte_net_ice**) provides poll mode driver support for
 10/25/50/100 Gbps Intel® Ethernet 800 Series Network Adapters based on
 the Intel Ethernet Controller E810 and Intel Ethernet Connection E822/E823.
 
-Prerequisites
--------------
+Linux Prerequisites
+-------------------
 
 - Follow the DPDK :ref:`Getting Started Guide for Linux <linux_gsg>` to setup the basic DPDK environment.
 
@@ -25,6 +25,21 @@ Prerequisites
 - To understand DDP for COMMs usage with DPDK, please review `Intel® Ethernet 800 Series Telecommunication (Comms)
   Dynamic Device Personalization (DDP) Package <https://cdrdv2.intel.com/v1/dl/getContent/618651>`_.
 
+Windows Prerequisites
+---------------------
+
+- Follow the :doc:`guide for Windows <../windows_gsg/run_apps>`
+  to setup the basic DPDK environment.
+
+- Identify the Intel® Ethernet adapter and get the latest NVM/FW version.
+
+- To access any Intel® Ethernet hardware, load the NetUIO driver in place of existing built-in (inbox) driver.
+
+- To load NetUIO driver, follow the steps mentioned in `dpdk-kmods repository
+  <https://git.dpdk.org/dpdk-kmods/tree/windows/netuio/README.rst>`_.
+
+- Loading of private Dynamic Device Personalization (DDP) package is not supported on Windows.
+
 
 Recommended Matching List
 -------------------------
@@ -34,11 +49,21 @@ to avoid the compatibility issues with ice PMD.
 Here is the suggested matching list which has been tested and verified.
 The detailed information can refer to chapter Tested Platforms/Tested NICs in release notes.
 
-   +-----------+---------------+-----------------+-----------+-----------+
-   |    DPDK   | Kernel Driver | OS Default DDP  | COMMS DDP | Firmware  |
-   +===========+===============+=================+===========+===========+
-   |    20.11  |     1.3.0     |      1.3.20     |  1.3.24   |    2.3    |
-   +-----------+---------------+-----------------+-----------+-----------+
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    DPDK   | Kernel Driver | OS Default DDP  | COMMS DDP | Wireless DDP | Firmware  |
+   +===========+===============+=================+===========+==============+===========+
+   |    20.11  |     1.3.2     |      1.3.20     |  1.3.24   |      N/A     |    2.3    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.02  |     1.4.11    |      1.3.24     |  1.3.28   |    1.3.4     |    2.4    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.05  |     1.6.5     |      1.3.26     |  1.3.30   |    1.3.6     |    3.0    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.08  |     1.7.16    |      1.3.27     |  1.3.31   |    1.3.7     |    3.1    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    21.11  |     1.7.16    |      1.3.27     |  1.3.31   |    1.3.7     |    3.1    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
+   |    22.03  |     1.8.3     |      1.3.28     |  1.3.35   |    1.3.8     |    3.2    |
+   +-----------+---------------+-----------------+-----------+--------------+-----------+
 
 Pre-Installation Configuration
 ------------------------------
@@ -85,29 +110,44 @@ Runtime Config Options
 
   The argument format is::
 
-      -a 18:00.0,proto_xtr=<queues:protocol>[<queues:protocol>...]
-      -a 18:00.0,proto_xtr=<protocol>
+      18:00.0,proto_xtr=<queues:protocol>[<queues:protocol>...],field_offs=<offset>, \
+      field_name=<name>
+      18:00.0,proto_xtr=<protocol>,field_offs=<offset>,field_name=<name>
 
   Queues are grouped by ``(`` and ``)`` within the group. The ``-`` character
   is used as a range separator and ``,`` is used as a single number separator.
   The grouping ``()`` can be omitted for single element group. If no queues are
   specified, PMD will use this protocol extraction type for all queues.
+  ``field_offs`` is the offset of mbuf dynamic field for protocol extraction data.
+  ``field_name`` is the name of mbuf dynamic field for protocol extraction data.
+  ``field_offs`` and ``field_name`` will be checked whether it is valid. If invalid,
+  an error print will be returned: ``Invalid field offset or name, no match dynfield``,
+  and the proto_ext function will not be enabled.
 
   Protocol is : ``vlan, ipv4, ipv6, ipv6_flow, tcp, ip_offset``.
 
   .. code-block:: console
 
-    dpdk-testpmd -a 18:00.0,proto_xtr='[(1,2-3,8-9):tcp,10-13:vlan]'
+    dpdk-testpmd -c 0xff -- -i
+    port stop 0
+    port detach 0
+    port attach 18:00.0,proto_xtr='[(1,2-3,8-9):tcp,10-13:vlan]',field_offs=92,field_name=pmd_dyn
 
   This setting means queues 1, 2-3, 8-9 are TCP extraction, queues 10-13 are
-  VLAN extraction, other queues run with no protocol extraction.
+  VLAN extraction, other queues run with no protocol extraction. The offset of mbuf
+  dynamic field is 92 for all queues with protocol extraction.
 
   .. code-block:: console
 
-    dpdk-testpmd -a 18:00.0,proto_xtr=vlan,proto_xtr='[(1,2-3,8-9):tcp,10-23:ipv6]'
+    dpdk-testpmd -c 0xff -- -i
+    port stop 0
+    port detach 0
+    port attach 18:00.0,proto_xtr=vlan,proto_xtr='[(1,2-3,8-9):tcp,10-23:ipv6]', \
+    field_offs=92,field_name=pmd_dyn
 
   This setting means queues 1, 2-3, 8-9 are TCP extraction, queues 10-23 are
-  IPv6 extraction, other queues use the default VLAN extraction.
+  IPv6 extraction, other queues use the default VLAN extraction. The offset of mbuf
+  dynamic field is 92 for all queues with protocol extraction.
 
   The extraction metadata is copied into the registered dynamic mbuf field, and
   the related dynamic mbuf flags is set.
@@ -186,12 +226,33 @@ Runtime Config Options
 
   IPHDR2 - Outer/Single IPv6 Header offset.
 
-  Use ``rte_net_ice_dynf_proto_xtr_metadata_get`` to access the protocol
-  extraction metadata, and use ``RTE_PKT_RX_DYNF_PROTO_XTR_*`` to get the
-  metadata type of ``struct rte_mbuf::ol_flags``.
+- ``Hardware debug mask log support`` (default ``0``)
 
-  The ``rte_net_ice_dump_proto_xtr_metadata`` routine shows how to
-  access the protocol extraction result in ``struct rte_mbuf``.
+  User can enable the related hardware debug mask such as ICE_DBG_NVM::
+
+    -a 0000:88:00.0,hw_debug_mask=0x80 --log-level=pmd.net.ice.driver:8
+
+  These ICE_DBG_XXX are defined in ``drivers/net/ice/base/ice_type.h``.
+
+- ``1PPS out support``
+
+  The E810 supports four single-ended GPIO signals (SDP[20:23]). The 1PPS
+  signal outputs via SDP[20:23]. User can select GPIO pin index flexibly.
+  Pin index 0 means SDP20, 1 means SDP21 and so on. For example::
+
+    -a af:00.0,pps_out='[pin:0]'
+
+- ``Low Rx latency`` (default ``0``)
+
+  vRAN workloads require low latency DPDK interface for the front haul
+  interface connection to Radio. By specifying ``1`` for parameter
+  ``rx_low_latency``, each completed Rx descriptor can be written immediately
+  to host memory and the Rx interrupt latency can be reduced to 2us::
+
+    -a 0000:88:00.0,rx_low_latency=1
+
+  As a trade-off, this configuration may cause the packet processing performance
+  degradation due to the PCI bandwidth limitation.
 
 Driver compilation and testing
 ------------------------------
@@ -242,6 +303,17 @@ as switch, ACL) for the rest VFs.
 The DCF PMD needs to advertise and acquire DCF capability which allows DCF to
 send AdminQ commands that it would like to execute over to the PF and receive
 responses for the same from PF.
+
+Additional Options
+++++++++++++++++++
+
+- ``Disable ACL Engine`` (default ``enabled``)
+
+  By default, all flow engines are enabled. But if user does not need the
+  ACL engine related functions, user can set ``devargs`` parameter
+  ``acl=off`` to disable the ACL engine and shorten the startup time.
+
+    -a 18:01.0,cap=dcf,acl=off
 
 .. _figure_ice_dcf:
 
@@ -316,3 +388,8 @@ is stored in ``ice_adapter->active_pkg_type``.
 
 A symbolic link to the DDP package file is also ok. The same package
 file is used by both the kernel driver and the DPDK PMD.
+
+   .. Note::
+
+      Windows support: The DDP package is not supported on Windows so,
+      loading of the package is disabled on Windows.

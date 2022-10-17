@@ -5,8 +5,11 @@
  */
 
 #include <limits.h>
+
 #include <rte_alarm.h>
 #include <rte_string_fns.h>
+
+#include "eal_firmware.h"
 
 #include "qede_ethdev.h"
 /* ######### DEBUG ###########*/
@@ -127,51 +130,40 @@ static void qed_free_stream_mem(struct ecore_dev *edev)
 #ifdef CONFIG_ECORE_BINARY_FW
 static int qed_load_firmware_data(struct ecore_dev *edev)
 {
-	int fd;
-	struct stat st;
 	const char *fw = RTE_LIBRTE_QEDE_FW;
+	void *buf;
+	size_t bufsz;
+	int ret;
 
 	if (strcmp(fw, "") == 0)
 		strcpy(qede_fw_file, QEDE_DEFAULT_FIRMWARE);
 	else
 		strcpy(qede_fw_file, fw);
 
-	fd = open(qede_fw_file, O_RDONLY);
-	if (fd < 0) {
-		DP_ERR(edev, "Can't open firmware file\n");
-		return -ENOENT;
-	}
-
-	if (fstat(fd, &st) < 0) {
-		DP_ERR(edev, "Can't stat firmware file\n");
-		close(fd);
+	if (rte_firmware_read(qede_fw_file, &buf, &bufsz) < 0) {
+		DP_ERR(edev, "Can't read firmware data: %s\n", qede_fw_file);
 		return -1;
 	}
 
-	edev->firmware = rte_zmalloc("qede_fw", st.st_size,
-				    RTE_CACHE_LINE_SIZE);
+	edev->firmware = rte_zmalloc("qede_fw", bufsz, RTE_CACHE_LINE_SIZE);
 	if (!edev->firmware) {
 		DP_ERR(edev, "Can't allocate memory for firmware\n");
-		close(fd);
-		return -ENOMEM;
+		ret = -ENOMEM;
+		goto out;
 	}
 
-	if (read(fd, edev->firmware, st.st_size) != st.st_size) {
-		DP_ERR(edev, "Can't read firmware data\n");
-		close(fd);
-		return -1;
-	}
-
-	edev->fw_len = st.st_size;
+	memcpy(edev->firmware, buf, bufsz);
+	edev->fw_len = bufsz;
 	if (edev->fw_len < 104) {
 		DP_ERR(edev, "Invalid fw size: %" PRIu64 "\n",
 			  edev->fw_len);
-		close(fd);
-		return -EINVAL;
+		ret = -EINVAL;
+		goto out;
 	}
-
-	close(fd);
-	return 0;
+	ret = 0;
+out:
+	free(buf);
+	return ret;
 }
 #endif
 
@@ -343,8 +335,7 @@ err1:
 err:
 #ifdef CONFIG_ECORE_BINARY_FW
 	if (IS_PF(edev)) {
-		if (edev->firmware)
-			rte_free(edev->firmware);
+		rte_free(edev->firmware);
 		edev->firmware = NULL;
 	}
 #endif
@@ -381,7 +372,7 @@ qed_fill_dev_info(struct ecore_dev *edev, struct qed_dev_info *dev_info)
 	dev_info->mtu = ECORE_LEADING_HWFN(edev)->hw_info.mtu;
 	dev_info->dev_type = edev->type;
 
-	rte_memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
+	memcpy(&dev_info->hw_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
 	       RTE_ETHER_ADDR_LEN);
 
 	dev_info->fw_major = FW_MAJOR_VERSION;
@@ -449,7 +440,7 @@ qed_fill_eth_dev_info(struct ecore_dev *edev, struct qed_dev_eth_info *info)
 		info->num_vlan_filters = RESC_NUM(&edev->hwfns[0], ECORE_VLAN) -
 					 max_vf_vlan_filters;
 
-		rte_memcpy(&info->port_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
+		memcpy(&info->port_mac, &edev->hwfns[0].hw_info.hw_mac_addr,
 			   RTE_ETHER_ADDR_LEN);
 	} else {
 		ecore_vf_get_num_rxqs(ECORE_LEADING_HWFN(edev),
@@ -480,7 +471,7 @@ static void qed_set_name(struct ecore_dev *edev, char name[NAME_SIZE])
 {
 	int i;
 
-	rte_memcpy(edev->name, name, NAME_SIZE);
+	memcpy(edev->name, name, NAME_SIZE);
 	for_each_hwfn(edev, i) {
 		snprintf(edev->hwfns[i].name, NAME_SIZE, "%s-%d", name, i);
 	}
@@ -522,10 +513,9 @@ static void qed_fill_link(struct ecore_hwfn *hwfn,
 
 	/* Prepare source inputs */
 	if (IS_PF(hwfn->p_dev)) {
-		rte_memcpy(&params, ecore_mcp_get_link_params(hwfn),
-		       sizeof(params));
-		rte_memcpy(&link, ecore_mcp_get_link_state(hwfn), sizeof(link));
-		rte_memcpy(&link_caps, ecore_mcp_get_link_capabilities(hwfn),
+		memcpy(&params, ecore_mcp_get_link_params(hwfn), sizeof(params));
+		memcpy(&link, ecore_mcp_get_link_state(hwfn), sizeof(link));
+		memcpy(&link_caps, ecore_mcp_get_link_capabilities(hwfn),
 		       sizeof(link_caps));
 	} else {
 		ecore_vf_read_bulletin(hwfn, &change);

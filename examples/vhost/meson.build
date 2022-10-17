@@ -7,17 +7,14 @@
 # DPDK instance, use 'make'
 
 if not is_linux
-	build = false
-	subdir_done()
+    build = false
+    subdir_done()
 endif
 
 deps += 'vhost'
+deps += 'dmadev'
 allow_experimental_apis = true
 sources = files(
-	'main.c', 'virtio_net.c'
+        'main.c',
+        'virtio_net.c',
 )
-
-if dpdk_conf.has('RTE_RAW_IOAT')
-	deps += 'raw_ioat'
-	sources += files('ioat.c')
-endif

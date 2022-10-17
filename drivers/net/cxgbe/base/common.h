@@ -12,10 +12,6 @@
 #include "t4_chip_type.h"
 #include "t4fw_interface.h"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 #define CXGBE_PAGE_SIZE RTE_PGSIZE_4K
 
 #define T4_MEMORY_WRITE 0
@@ -105,6 +101,8 @@ struct port_stats {
 	u64 rx_trunc1;            /* buffer-group 1 truncated packets */
 	u64 rx_trunc2;            /* buffer-group 2 truncated packets */
 	u64 rx_trunc3;            /* buffer-group 3 truncated packets */
+
+	u64 rx_tp_tnl_cong_drops[NCHAN]; /* TP frame drops due to congestion */
 };
 
 struct sge_params {
@@ -266,6 +264,9 @@ struct adapter_params {
 	u32 viid_smt_extn_support:1;	  /* FW returns vin and smt index */
 	u32 max_tx_coalesce_num; /* Max # of Tx packets that can be coalesced */
 	u8 vi_enable_rx; /* FW support for enable/disable VI Rx at runtime */
+
+	u16 rawf_start; /* FW supports RAW MAC match-all filters */
+	u16 rawf_size;
 };
 
 /* Firmware Port Capabilities types.
@@ -344,8 +345,6 @@ int t4_fw_reset(struct adapter *adap, unsigned int mbox, int reset);
 int t4vf_fw_reset(struct adapter *adap);
 int t4_fw_halt(struct adapter *adap, unsigned int mbox, int reset);
 int t4_fw_restart(struct adapter *adap, unsigned int mbox, int reset);
-int t4_fl_pkt_align(struct adapter *adap);
-int t4vf_fl_pkt_align(struct adapter *adap, u32 sge_control, u32 sge_control2);
 int t4vf_get_vfres(struct adapter *adap);
 int t4_fixup_host_params_compat(struct adapter *adap, unsigned int page_size,
 				unsigned int cache_line_size,

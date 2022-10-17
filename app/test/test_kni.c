@@ -2,15 +2,12 @@
  * Copyright(c) 2010-2014 Intel Corporation
  */
 
+#include "test.h"
+
 #include <stdio.h>
 #include <stdint.h>
 #include <unistd.h>
 #include <string.h>
-#include <sys/wait.h>
-#include <dirent.h>
-
-#include "test.h"
-
 #if !defined(RTE_EXEC_ENV_LINUX) || !defined(RTE_LIB_KNI)
 
 static int
@@ -22,10 +19,12 @@ test_kni(void)
 
 #else
 
+#include <sys/wait.h>
+#include <dirent.h>
+
 #include <rte_string_fns.h>
 #include <rte_mempool.h>
 #include <rte_ethdev.h>
-#include <rte_bus_pci.h>
 #include <rte_cycles.h>
 #include <rte_kni.h>
 
@@ -74,7 +73,7 @@ static const struct rte_eth_txconf tx_conf = {
 
 static const struct rte_eth_conf port_conf = {
 	.txmode = {
-		.mq_mode = ETH_DCB_NONE,
+		.mq_mode = RTE_ETH_MQ_TX_NONE,
 	},
 };
 
@@ -326,7 +325,7 @@ test_kni_register_handler_mp(void)
 
 		/* Check with the invalid parameters */
 		if (rte_kni_register_handlers(kni, NULL) == 0) {
-			printf("Unexpectedly register successuflly "
+			printf("Unexpectedly register successfully "
 					"with NULL ops pointer\n");
 			exit(-1);
 		}
@@ -426,8 +425,6 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 	struct rte_kni_conf conf;
 	struct rte_eth_dev_info info;
 	struct rte_kni_ops ops;
-	const struct rte_pci_device *pci_dev;
-	const struct rte_bus *bus = NULL;
 
 	if (!mp)
 		return -1;
@@ -443,13 +440,6 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 		return -1;
 	}
 
-	if (info.device)
-		bus = rte_bus_find_by_device(info.device);
-	if (bus && !strcmp(bus->name, "pci")) {
-		pci_dev = RTE_DEV_TO_PCI(info.device);
-		conf.addr = pci_dev->addr;
-		conf.id = pci_dev->id;
-	}
 	snprintf(conf.name, sizeof(conf.name), TEST_KNI_PORT);
 
 	/* core id 1 configured for kernel thread */
@@ -475,7 +465,7 @@ test_kni_processing(uint16_t port_id, struct rte_mempool *mp)
 
 	/**
 	 * Check multiple processes support on
-	 * registerring/unregisterring handlers.
+	 * registering/unregistering handlers.
 	 */
 	if (test_kni_register_handler_mp() < 0) {
 		printf("fail to check multiple process support\n");
@@ -545,8 +535,6 @@ test_kni(void)
 	struct rte_kni_conf conf;
 	struct rte_eth_dev_info info;
 	struct rte_kni_ops ops;
-	const struct rte_pci_device *pci_dev;
-	const struct rte_bus *bus;
 	FILE *fd;
 	DIR *dir;
 	char buf[16];
@@ -562,8 +550,12 @@ test_kni(void)
 	}
 	closedir(dir);
 
-	/* Initialize KNI subsytem */
-	rte_kni_init(KNI_TEST_MAX_PORTS);
+	/* Initialize KNI subsystem */
+	ret = rte_kni_init(KNI_TEST_MAX_PORTS);
+	if (ret < 0) {
+		printf("fail to initialize KNI subsystem\n");
+		return -1;
+	}
 
 	if (test_kni_allocate_lcores() < 0) {
 		printf("No enough lcores for kni processing\n");
@@ -641,15 +633,6 @@ test_kni(void)
 		return -1;
 	}
 
-	if (info.device)
-		bus = rte_bus_find_by_device(info.device);
-	else
-		bus = NULL;
-	if (bus && !strcmp(bus->name, "pci")) {
-		pci_dev = RTE_DEV_TO_PCI(info.device);
-		conf.addr = pci_dev->addr;
-		conf.id = pci_dev->id;
-	}
 	conf.group_id = port_id;
 	conf.mbuf_size = MAX_PACKET_SZ;
 
@@ -685,15 +668,6 @@ test_kni(void)
 		goto fail;
 	}
 
-	if (info.device)
-		bus = rte_bus_find_by_device(info.device);
-	else
-		bus = NULL;
-	if (bus && !strcmp(bus->name, "pci")) {
-		pci_dev = RTE_DEV_TO_PCI(info.device);
-		conf.addr = pci_dev->addr;
-		conf.id = pci_dev->id;
-	}
 	conf.group_id = port_id;
 	conf.mbuf_size = MAX_PACKET_SZ;
 

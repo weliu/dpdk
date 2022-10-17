@@ -3,7 +3,7 @@
  */
 
 #include <rte_pci.h>
-#include <rte_bus_pci.h>
+#include <bus_pci_driver.h>
 #include <rte_rawdev.h>
 #include <rte_rawdev_pmd.h>
 #include "rte_pmd_ifpga.h"
@@ -34,7 +34,7 @@ rte_pmd_ifpga_get_dev_id(const char *pci_addr, uint16_t *dev_id)
 		return -EINVAL;
 	}
 
-	snprintf(rdev_name, RTE_RAWDEV_NAME_MAX_LEN, "IFPGA:%02x:%02x.%x",
+	snprintf(rdev_name, RTE_RAWDEV_NAME_MAX_LEN, IFPGA_RAWDEV_NAME_FMT,
 		addr.bus, addr.devid, addr.function);
 	rdev = rte_rawdev_pmd_get_named_dev(rdev_name);
 	if (!rdev) {
@@ -400,12 +400,6 @@ rte_pmd_ifpga_reload(uint16_t dev_id, int type, int page)
 		return -ENODEV;
 
 	return opae_mgr_reload(adapter->mgr, type, page);
-}
-
-const struct rte_pci_bus *
-rte_pmd_ifpga_get_pci_bus(void)
-{
-	return ifpga_get_pci_bus();
 }
 
 int
